@@ -398,7 +398,7 @@ class AlertNotifier:
         if not LOCAL_SETTINGS_PATH.exists():
             return {}
         try:
-            return json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            return json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return {}
 
