@@ -6,6 +6,7 @@ __pycache__/
 
 .env
 .env.*
+local_settings.json
 *.log
 
 # Browser profiles and session state can contain cookies, storage and fingerprints.
@@ -30,4 +31,3 @@ fase1/shoppingfeed_*.csv
 fase1/*_check_*.csv
 fase1/*_pending_*.csv
 fase1/*_remaining_*.csv
-

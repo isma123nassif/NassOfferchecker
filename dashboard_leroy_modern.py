@@ -1,6 +1,10 @@
+import json
+import os
 import queue
 import shutil
 import threading
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -9,6 +13,10 @@ import customtkinter as ctk
 
 from dashboard_leroy import InputProduct, LeroyChecker, PROFILE_DIR, read_products_csv
 
+
+BASE_DIR = Path(__file__).resolve().parent
+LOCAL_SETTINGS_PATH = BASE_DIR / "local_settings.json"
+SHOPPINGFEED_CACHE_PATH = BASE_DIR / "fase1" / "shoppingfeed_latest.csv"
 
 APP_BG = "#F7F8FA"
 PANEL = "#FFFFFF"
@@ -92,8 +100,10 @@ class ModernDashboard(ctk.CTk):
         self.products: list[InputProduct] = []
         self.checker: LeroyChecker | None = None
         self.worker: threading.Thread | None = None
+        self.catalog_worker: threading.Thread | None = None
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.row_urls: dict[str, str] = {}
+        self.shoppingfeed_url = self.load_shoppingfeed_url()
 
         dialog = MarketplaceDialog(self)
         self.wait_window(dialog)
@@ -125,8 +135,27 @@ class ModernDashboard(ctk.CTk):
         self.marketplace_box.set(self.marketplace)
         self.marketplace_box.pack(fill="x", padx=22)
 
-        ctk.CTkLabel(sidebar, text="Entrada", text_color="#B7D7C3", font=("Segoe UI", 12, "bold")).pack(
+        ctk.CTkLabel(sidebar, text="Catalogo vivo", text_color="#B7D7C3", font=("Segoe UI", 12, "bold")).pack(
             anchor="w", padx=24, pady=(28, 6)
+        )
+        ctk.CTkButton(
+            sidebar,
+            text="Cargar catalogo Shoppingfeed",
+            fg_color=LEROY,
+            hover_color="#006332",
+            command=self.load_live_catalog,
+        ).pack(fill="x", padx=22, pady=(0, 8))
+        ctk.CTkLabel(
+            sidebar,
+            text="Formato: ean;reference;quantity;price",
+            text_color="#B7D7C3",
+            font=("Segoe UI", 11),
+            wraplength=196,
+            justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 4))
+
+        ctk.CTkLabel(sidebar, text="Entrada", text_color="#B7D7C3", font=("Segoe UI", 12, "bold")).pack(
+            anchor="w", padx=24, pady=(22, 6)
         )
         self.ean_var = ctk.StringVar()
         ctk.CTkEntry(sidebar, textvariable=self.ean_var, placeholder_text="EAN manual", height=40).pack(
@@ -135,7 +164,7 @@ class ModernDashboard(ctk.CTk):
         ctk.CTkButton(sidebar, text="Agregar EAN", fg_color="#155E3A", hover_color="#114D30", command=self.add_single_ean).pack(
             fill="x", padx=22, pady=(0, 10)
         )
-        ctk.CTkButton(sidebar, text="Cargar CSV bulk", fg_color="#155E3A", hover_color="#114D30", command=self.load_bulk).pack(
+        ctk.CTkButton(sidebar, text="Cargar CSV manual", fg_color="#155E3A", hover_color="#114D30", command=self.load_bulk).pack(
             fill="x", padx=22, pady=(0, 10)
         )
 
@@ -171,7 +200,9 @@ class ModernDashboard(ctk.CTk):
         ctk.CTkLabel(header, text="Disponibilidad de productos", font=("Segoe UI", 28, "bold"), text_color=TEXT).grid(
             row=0, column=0, sticky="w"
         )
-        self.subtitle_var = ctk.StringVar(value="Carga EANs o un CSV y revisa estado comercial en Leroy Merlin.")
+        self.subtitle_var = ctk.StringVar(
+            value="Carga el catalogo vivo de Shoppingfeed, pega un EAN o importa un CSV manual."
+        )
         ctk.CTkLabel(header, textvariable=self.subtitle_var, text_color=MUTED, font=("Segoe UI", 13)).grid(
             row=1, column=0, sticky="w", pady=(4, 0)
         )
@@ -270,6 +301,21 @@ class ModernDashboard(ctk.CTk):
         )
         style.map("Treeview", background=[("selected", "#E7F3EC")], foreground=[("selected", TEXT)])
 
+    def load_shoppingfeed_url(self) -> str:
+        env_url = (
+            os.environ.get("SHOPPINGFEED_CATALOG_URL", "").strip()
+            or os.environ.get("SHOPPINGFEED_URL", "").strip()
+        )
+        if env_url:
+            return env_url
+        if LOCAL_SETTINGS_PATH.exists():
+            try:
+                data = json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return ""
+            return str(data.get("shoppingfeed_url", "") or "").strip()
+        return ""
+
     def add_single_ean(self):
         ean = self.ean_var.get().strip()
         if not ean:
@@ -278,6 +324,49 @@ class ModernDashboard(ctk.CTk):
         self.add_pending_row(self.products[-1])
         self.ean_var.set("")
         self.progress_text.set(f"{len(self.products)} productos cargados")
+
+    def load_live_catalog(self):
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning("En ejecucion", "Para el analisis antes de cargar otro catalogo.")
+            return
+        if self.catalog_worker and self.catalog_worker.is_alive():
+            return
+        if not self.shoppingfeed_url:
+            messagebox.showerror(
+                "Shoppingfeed no configurado",
+                "Configura SHOPPINGFEED_URL o local_settings.json con shoppingfeed_url.",
+            )
+            return
+        self.progress.set(0)
+        self.progress_text.set("Descargando catalogo vivo de Shoppingfeed...")
+        self.catalog_worker = threading.Thread(target=self.download_live_catalog, daemon=True)
+        self.catalog_worker.start()
+
+    def download_live_catalog(self):
+        try:
+            self.events.put(("catalog_progress", "Descargando catalogo vivo de Shoppingfeed..."))
+            request = urllib.request.Request(
+                self.shoppingfeed_url,
+                headers={
+                    "User-Agent": "OfferChecker/1.0",
+                    "Accept": "text/csv,text/plain,*/*",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                raw = response.read()
+            text = raw.decode("utf-8-sig", errors="replace")
+            lines = text.splitlines()
+            if not lines or "ean" not in lines[0].casefold():
+                raise ValueError("El feed no parece tener cabecera EAN.")
+            self.events.put(("catalog_progress", "Catalogo descargado. Leyendo CSV..."))
+            SHOPPINGFEED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SHOPPINGFEED_CACHE_PATH.write_text(text, encoding="utf-8")
+            products = read_products_csv(SHOPPINGFEED_CACHE_PATH)
+            if not products:
+                raise ValueError("No se encontraron EANs en el feed.")
+            self.events.put(("catalog_loaded", products, str(SHOPPINGFEED_CACHE_PATH)))
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            self.events.put(("catalog_error", str(exc)))
 
     def add_pending_row(self, product: InputProduct):
         self.tree.insert(
@@ -397,6 +486,24 @@ class ModernDashboard(ctk.CTk):
                     self.subtitle_var.set(f"Salida: {event[1]}")
                 elif kind == "error":
                     messagebox.showerror("Error", event[1])
+                elif kind == "catalog_progress":
+                    self.progress_text.set(event[1])
+                elif kind == "catalog_loaded":
+                    _, products, cache_path = event
+                    self.products = products
+                    self.tree.delete(*self.tree.get_children())
+                    self.row_urls.clear()
+                    self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
+                    self.update_cards()
+                    for product in self.products:
+                        self.add_pending_row(product)
+                    self.progress.set(0)
+                    self.progress_text.set(f"{len(self.products)} productos cargados desde Shoppingfeed")
+                    self.subtitle_var.set(f"Catalogo vivo cacheado en {cache_path}")
+                elif kind == "catalog_error":
+                    self.progress.set(0)
+                    self.progress_text.set("Error descargando Shoppingfeed")
+                    messagebox.showerror("Error Shoppingfeed", event[1])
         except queue.Empty:
             pass
         self.after(200, self.process_events)

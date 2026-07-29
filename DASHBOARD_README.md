@@ -17,11 +17,42 @@ python .\dashboard_leroy_modern.py
 ## Uso
 
 1. Selecciona marketplace: `Leroy Merlin`.
-2. Introduce un EAN manual o carga un CSV bulk.
-3. Opcional: ajusta `Seller esperado`, por defecto `NEWLUX GROUP`.
-4. Pulsa `Analizar`.
+2. Pulsa `Cargar catalogo Shoppingfeed` para recuperar el feed vivo.
+3. Alternativas: introduce un EAN manual o carga un CSV manual.
+4. Opcional: ajusta `Seller esperado`, por defecto `NEWLUX GROUP`.
+5. Pulsa `Analizar`.
 
-El CSV bulk puede tener:
+## Shoppingfeed vivo
+
+La URL privada del catalogo no se guarda en codigo. Configurala de una de estas formas:
+
+```powershell
+$env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
+```
+
+O crea un archivo local no versionado:
+
+```text
+local_settings.json
+```
+
+Con este formato:
+
+```json
+{
+  "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
+}
+```
+
+La app descarga el feed y lo cachea localmente en:
+
+```text
+fase1/shoppingfeed_latest.csv
+```
+
+## CSV manual
+
+El CSV manual puede tener:
 
 ```text
 ean;reference;quantity;price
