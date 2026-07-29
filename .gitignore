@@ -1,0 +1,33 @@
+.agents/
+.codex/
+
+__pycache__/
+*.py[cod]
+
+.env
+.env.*
+*.log
+
+# Browser profiles and session state can contain cookies, storage and fingerprints.
+fase1/browser_profile_leroy/
+fase1/**/storage_state*.json
+fase1/**/cookies*.json
+
+# Generated scraper outputs.
+fase1/output/
+fase1/output_local/
+fase1/output_playwright/
+fase1/dashboard_runs/
+fase1/**/html/
+fase1/**/*.html
+fase1/**/*.png
+fase1/**/*.jpg
+fase1/**/*.jpeg
+fase1/**/*.webp
+
+# Shoppingfeed exports and run-sized result files.
+fase1/shoppingfeed_*.csv
+fase1/*_check_*.csv
+fase1/*_pending_*.csv
+fase1/*_remaining_*.csv
+
