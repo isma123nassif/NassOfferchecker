@@ -75,7 +75,7 @@ No se bloquea JavaScript general ni componentes de sesion/challenge, para no deg
 
 Controles junto a la barra de progreso:
 
-- `Workers`: navegadores paralelos, limitado de `1` a `3`.
+- `Workers`: navegadores paralelos, limitado de `1` a `10`.
 - `Corte tecnico`: numero de senales tecnicas consecutivas antes de parar el lote.
 
 Cada worker usa un perfil Chromium separado:
@@ -88,9 +88,8 @@ Estos perfiles no se versionan.
 
 Recomendacion operativa:
 
-- empezar en `1`;
-- probar `2` si no hay challenges;
-- usar `3` solo en sesiones estables;
+- empezar en `10` para medir capacidad maxima;
+- bajar a `7`, `5`, `3` o `1` si aparecen bloqueos o lentitud local;
 - mantener el corte tecnico en `3-5`.
 
 ## Alertas Slack

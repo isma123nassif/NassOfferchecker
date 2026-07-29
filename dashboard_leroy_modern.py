@@ -291,7 +291,7 @@ class ModernDashboard(ctk.CTk):
         phase3_controls = ctk.CTkFrame(progress_panel, fg_color="transparent")
         phase3_controls.grid(row=0, column=1, sticky="e", padx=18, pady=(10, 0))
         ctk.CTkLabel(phase3_controls, text="Workers", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
-        self.worker_count_var = ctk.StringVar(value="1")
+        self.worker_count_var = ctk.StringVar(value="10")
         ctk.CTkEntry(phase3_controls, textvariable=self.worker_count_var, width=48, height=28).pack(side="left", padx=(0, 12))
         ctk.CTkLabel(phase3_controls, text="Corte tecnico", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
         self.circuit_threshold_var = ctk.StringVar(value="4")
@@ -602,8 +602,8 @@ class ModernDashboard(ctk.CTk):
         try:
             worker_count = int(float(self.worker_count_var.get().replace(",", ".")))
         except ValueError:
-            worker_count = 1
-        worker_count = max(1, min(worker_count, 3))
+            worker_count = 10
+        worker_count = max(1, min(worker_count, 10))
         self.worker_count_var.set(str(worker_count))
         try:
             circuit_threshold = int(float(self.circuit_threshold_var.get().replace(",", ".")))

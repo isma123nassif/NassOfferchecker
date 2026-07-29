@@ -144,14 +144,13 @@ La fase 3 permite revisar en paralelo con varios navegadores, cada uno con perfi
 
 Controles:
 
-- `Workers`: numero de navegadores paralelos. Rango permitido: `1` a `3`.
+- `Workers`: numero de navegadores paralelos. Rango permitido: `1` a `10`.
 - `Corte tecnico`: numero de senales tecnicas consecutivas antes de parar el lote.
 
 Valores recomendados:
 
-- empezar con `1`;
-- subir a `2` si no hay challenges;
-- usar `3` solo si la sesion es estable;
+- empezar con `10` para medir capacidad maxima;
+- bajar a `7`, `5`, `3` o `1` si aparecen bloqueos o lentitud local;
 - mantener `Corte tecnico` entre `3` y `5`.
 
 Si aparecen varios `INCIERTA`, captchas, DataDome, timeouts o errores seguidos, se activa el circuit breaker y se deja de tomar trabajo nuevo.

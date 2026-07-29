@@ -545,7 +545,7 @@ class LeroyChecker:
         self.nav_timeout_ms = int(max(nav_timeout, 5.0) * 1000)
         self.retry_timeout_ms = int(max(retry_timeout, nav_timeout, 5.0) * 1000)
         self.block_assets = block_assets
-        self.worker_count = max(1, min(int(worker_count), 3))
+        self.worker_count = max(1, min(int(worker_count), 10))
         self.circuit_breaker_threshold = max(1, int(circuit_breaker_threshold))
         self.stop_requested = False
         self.circuit_open = False
