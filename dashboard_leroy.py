@@ -1,8 +1,10 @@
 import csv
+import hashlib
 import json
 import queue
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import tkinter as tk
@@ -18,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent
 FASE_DIR = BASE_DIR / "fase1"
 PROFILE_DIR = FASE_DIR / "browser_profile_leroy"
 RUNS_DIR = FASE_DIR / "dashboard_runs"
+CACHE_DB_PATH = FASE_DIR / "offer_cache.sqlite"
 LEROY_HOME_URL = "https://www.leroymerlin.es/"
 LEROY_SEARCH_URL = "https://www.leroymerlin.es/search?q={ean}"
 
@@ -64,6 +67,18 @@ def parse_quantity(value: str) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def product_feed_signature(product: InputProduct) -> str:
+    raw = "\n".join(
+        [
+            product.ean.strip(),
+            product.reference.strip(),
+            product.quantity.strip(),
+            product.price.strip(),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def read_products_csv(path: Path) -> list[InputProduct]:
@@ -254,6 +269,94 @@ def write_dashboard_row(path: Path, row: DashboardResult) -> None:
         writer.writerow(asdict(row))
 
 
+class OfferCache:
+    def __init__(self, path: Path = CACHE_DB_PATH):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS offer_results (
+                    ean TEXT NOT NULL,
+                    expected_seller TEXT NOT NULL,
+                    feed_signature TEXT NOT NULL,
+                    checked_at REAL NOT NULL,
+                    result_json TEXT NOT NULL,
+                    PRIMARY KEY (ean, expected_seller)
+                )
+                """
+            )
+
+    def get_fresh(
+        self,
+        product: InputProduct,
+        expected_seller: str,
+        ttl_hours: float,
+    ) -> DashboardResult | None:
+        expected_seller = (expected_seller or "").strip()
+        signature = product_feed_signature(product)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT feed_signature, checked_at, result_json
+                FROM offer_results
+                WHERE ean = ? AND expected_seller = ?
+                """,
+                (product.ean, expected_seller),
+            ).fetchone()
+        if not row:
+            return None
+        if row["feed_signature"] != signature:
+            return None
+        max_age_seconds = max(ttl_hours, 0) * 3600
+        if max_age_seconds and (time.time() - float(row["checked_at"])) > max_age_seconds:
+            return None
+        data = json.loads(row["result_json"])
+        if data.get("status") == "INCIERTA" or data.get("light") == "gray":
+            return None
+        data.update(
+            {
+                "reference": product.reference,
+                "feed_quantity": product.quantity,
+                "feed_price": product.price,
+                "reason": f"cache diferencial: {data.get('reason', '')}".strip(),
+                "elapsed_seconds": 0.0,
+            }
+        )
+        return DashboardResult(**data)
+
+    def put(self, product: InputProduct, expected_seller: str, row: DashboardResult) -> None:
+        if row.status == "INCIERTA" or row.light == "gray":
+            return
+        data = asdict(row)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO offer_results (ean, expected_seller, feed_signature, checked_at, result_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(ean, expected_seller) DO UPDATE SET
+                    feed_signature = excluded.feed_signature,
+                    checked_at = excluded.checked_at,
+                    result_json = excluded.result_json
+                """,
+                (
+                    product.ean,
+                    (expected_seller or "").strip(),
+                    product_feed_signature(product),
+                    time.time(),
+                    json.dumps(data, ensure_ascii=False),
+                ),
+            )
+
+
 def minimize_chromium_window(context, page) -> None:
     try:
         session = context.new_cdp_session(page)
@@ -276,6 +379,7 @@ class LeroyChecker:
         self.stop_requested = False
         self.run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
         self.summary_path = self.run_dir / "summary_live.csv"
+        self.cache = OfferCache()
 
     def stop(self) -> None:
         self.stop_requested = True
@@ -349,6 +453,7 @@ class LeroyChecker:
                             html_path="",
                         )
                         write_dashboard_row(self.summary_path, row)
+                        self.cache.put(product, self.expected_seller, row)
                         events.put(("result", index, len(self.products), row))
                         time.sleep(self.delay)
                         continue
@@ -386,6 +491,7 @@ class LeroyChecker:
                     html_path=html_path,
                 )
                 write_dashboard_row(self.summary_path, row)
+                self.cache.put(product, self.expected_seller, row)
                 events.put(("result", index, len(self.products), row))
                 if index < len(self.products):
                     time.sleep(self.delay)

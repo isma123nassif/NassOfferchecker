@@ -8,6 +8,8 @@ __pycache__/
 .env.*
 local_settings.json
 *.log
+*.sqlite
+*.sqlite3
 
 # Browser profiles and session state can contain cookies, storage and fingerprints.
 fase1/browser_profile_leroy/

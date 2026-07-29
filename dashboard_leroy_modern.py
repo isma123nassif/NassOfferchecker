@@ -11,7 +11,15 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from dashboard_leroy import InputProduct, LeroyChecker, PROFILE_DIR, read_products_csv
+from dashboard_leroy import (
+    DashboardResult,
+    InputProduct,
+    LeroyChecker,
+    OfferCache,
+    PROFILE_DIR,
+    parse_quantity,
+    read_products_csv,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -103,6 +111,10 @@ class ModernDashboard(ctk.CTk):
         self.catalog_worker: threading.Thread | None = None
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.row_urls: dict[str, str] = {}
+        self.row_items: dict[str, str] = {}
+        self.cached_count = 0
+        self.direct_count = 0
+        self.live_total = 0
         self.shoppingfeed_url = self.load_shoppingfeed_url()
 
         dialog = MarketplaceDialog(self)
@@ -177,6 +189,19 @@ class ModernDashboard(ctk.CTk):
         )
         self.delay_var = ctk.StringVar(value="2")
         ctk.CTkEntry(sidebar, textvariable=self.delay_var, placeholder_text="Delay segundos", height=38).pack(
+            fill="x", padx=22, pady=(0, 10)
+        )
+        self.use_cache_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            sidebar,
+            text="Cache diferencial",
+            variable=self.use_cache_var,
+            text_color="#D9F0E0",
+            fg_color=LEROY,
+            hover_color="#114D30",
+        ).pack(anchor="w", padx=22, pady=(2, 10))
+        self.cache_ttl_var = ctk.StringVar(value="24")
+        ctk.CTkEntry(sidebar, textvariable=self.cache_ttl_var, placeholder_text="TTL cache horas", height=38).pack(
             fill="x", padx=22
         )
 
@@ -369,11 +394,61 @@ class ModernDashboard(ctk.CTk):
             self.events.put(("catalog_error", str(exc)))
 
     def add_pending_row(self, product: InputProduct):
-        self.tree.insert(
+        item = self.tree.insert(
             "",
             "end",
             values=("", product.ean, product.reference, product.quantity, product.price, "Pendiente", "", "", ""),
         )
+        self.row_items[product.ean] = item
+        return item
+
+    def build_feed_stock_result(self, product: InputProduct) -> DashboardResult:
+        return DashboardResult(
+            ean=product.ean,
+            reference=product.reference,
+            feed_quantity=product.quantity,
+            feed_price=product.price,
+            light="red",
+            status="SIN_STOCK_FEED",
+            final_url=f"https://www.leroymerlin.es/search?q={product.ean}",
+            title="",
+            sku="",
+            seller_name="",
+            marketplace_price="",
+            product_availability="feed_stock_zero",
+            offer_available=False,
+            buybox_ok="unknown",
+            challenge_detected=False,
+            reason="stock feed <= 0; no se abre Leroy",
+            elapsed_seconds=0.0,
+            html_path="",
+        )
+
+    def render_result_row(self, row: DashboardResult):
+        item = self.row_items.get(row.ean)
+        if not item:
+            item = self.tree.insert("", "end")
+            self.row_items[row.ean] = item
+        code, _label, _color = LIGHT_META.get(row.light, LIGHT_META["gray"])
+        self.tree.item(
+            item,
+            values=(
+                code,
+                row.ean,
+                row.reference,
+                row.feed_quantity,
+                row.feed_price,
+                self.business_status(row.status),
+                row.seller_name,
+                row.marketplace_price,
+                row.reason,
+            ),
+            tags=(row.light,),
+        )
+        self.row_urls[item] = row.final_url
+        if row.light in self.counts:
+            self.counts[row.light] += 1
+            self.update_cards()
 
     def load_bulk(self):
         path = filedialog.askopenfilename(
@@ -389,6 +464,7 @@ class ModernDashboard(ctk.CTk):
             return
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
+        self.row_items.clear()
         for product in self.products:
             self.add_pending_row(product)
         self.progress.set(0)
@@ -401,6 +477,7 @@ class ModernDashboard(ctk.CTk):
         self.products = []
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
+        self.row_items.clear()
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.progress.set(0)
@@ -426,17 +503,49 @@ class ModernDashboard(ctk.CTk):
             delay = float(self.delay_var.get().replace(",", "."))
         except ValueError:
             delay = 2.0
+        try:
+            cache_ttl = float(self.cache_ttl_var.get().replace(",", "."))
+        except ValueError:
+            cache_ttl = 24.0
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
+        self.row_items.clear()
+        self.cached_count = 0
+        self.direct_count = 0
+        products_to_check: list[InputProduct] = []
+        expected_seller = self.expected_seller_var.get()
+        offer_cache = OfferCache()
         for product in self.products:
-            self.add_pending_row(product)
+            feed_qty = parse_quantity(product.quantity)
+            if feed_qty is not None and feed_qty <= 0:
+                self.add_pending_row(product)
+                self.render_result_row(self.build_feed_stock_result(product))
+                self.direct_count += 1
+                continue
+            cached_row = None
+            if self.use_cache_var.get():
+                cached_row = offer_cache.get_fresh(product, expected_seller, cache_ttl)
+            if cached_row:
+                self.add_pending_row(product)
+                self.render_result_row(cached_row)
+                self.cached_count += 1
+            else:
+                products_to_check.append(product)
+                self.add_pending_row(product)
         self.progress.set(0)
-        self.checker = LeroyChecker(self.products, self.expected_seller_var.get(), delay)
+        self.live_total = len(products_to_check)
+        if not products_to_check:
+            resolved = self.cached_count + self.direct_count
+            self.progress.set(1)
+            self.progress_text.set(f"Terminado sin navegador: {resolved} resueltos por cache/feed")
+            return
+        self.checker = LeroyChecker(products_to_check, expected_seller, delay)
         self.worker = threading.Thread(target=self.checker.run, args=(self.events,), daemon=True)
         self.worker.start()
-        self.progress_text.set("Analizando...")
+        skipped = self.cached_count + self.direct_count
+        self.progress_text.set(f"Analizando {self.live_total}; saltados {skipped} por cache/feed")
 
     def stop_analysis(self):
         if self.checker:
@@ -454,34 +563,15 @@ class ModernDashboard(ctk.CTk):
                 kind = event[0]
                 if kind == "result":
                     _, index, total, row = event
-                    children = self.tree.get_children()
-                    item = children[index - 1] if index - 1 < len(children) else self.tree.insert("", "end")
-                    code, label, _color = LIGHT_META.get(row.light, LIGHT_META["gray"])
-                    business_status = self.business_status(row.status)
-                    self.tree.item(
-                        item,
-                        values=(
-                            code,
-                            row.ean,
-                            row.reference,
-                            row.feed_quantity,
-                            row.feed_price,
-                            business_status,
-                            row.seller_name,
-                            row.marketplace_price,
-                            row.reason,
-                        ),
-                        tags=(row.light,),
-                    )
-                    self.row_urls[item] = row.final_url
-                    if row.light in self.counts:
-                        self.counts[row.light] += 1
-                        self.update_cards()
-                    self.progress.set(index / total if total else 0)
-                    self.progress_text.set(f"{index}/{total} analizados")
+                    self.render_result_row(row)
+                    resolved = self.cached_count + self.direct_count + index
+                    full_total = self.cached_count + self.direct_count + total
+                    self.progress.set(resolved / full_total if full_total else 0)
+                    self.progress_text.set(f"{resolved}/{full_total} resueltos ({index}/{total} navegador)")
                 elif kind == "done":
                     _, elapsed, summary = event
-                    self.progress_text.set(f"Terminado en {elapsed}s - {summary}")
+                    skipped = self.cached_count + self.direct_count
+                    self.progress_text.set(f"Terminado en {elapsed}s - {summary} - saltados {skipped}")
                 elif kind == "run_dir":
                     self.subtitle_var.set(f"Salida: {event[1]}")
                 elif kind == "error":
@@ -493,6 +583,7 @@ class ModernDashboard(ctk.CTk):
                     self.products = products
                     self.tree.delete(*self.tree.get_children())
                     self.row_urls.clear()
+                    self.row_items.clear()
                     self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
                     self.update_cards()
                     for product in self.products:

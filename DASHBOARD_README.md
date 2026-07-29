@@ -22,6 +22,27 @@ python .\dashboard_leroy_modern.py
 4. Opcional: ajusta `Seller esperado`, por defecto `NEWLUX GROUP`.
 5. Pulsa `Analizar`.
 
+## Fase 1: aceleracion diferencial
+
+La app evita abrir Chromium cuando puede resolver el producto antes:
+
+- `Stock` del feed menor o igual a cero: se marca rojo `Sin stock feed`.
+- `Cache diferencial` activada: si `EAN`, `reference`, `quantity`, `price` y `Seller esperado` no han cambiado y el resultado no ha vencido, reutiliza el ultimo resultado.
+- Resultados `INCIERTA` o tecnicos no se reutilizan desde cache.
+
+Configuracion visual:
+
+- `Cache diferencial`: activada por defecto.
+- `TTL cache horas`: por defecto `24`.
+
+La cache local se guarda en:
+
+```text
+fase1/offer_cache.sqlite
+```
+
+Este archivo no se versiona.
+
 ## Shoppingfeed vivo
 
 La URL privada del catalogo no se guarda en codigo. Configurala de una de estas formas:
