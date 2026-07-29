@@ -23,6 +23,16 @@ RUNS_DIR = FASE_DIR / "dashboard_runs"
 CACHE_DB_PATH = FASE_DIR / "offer_cache.sqlite"
 LEROY_HOME_URL = "https://www.leroymerlin.es/"
 LEROY_SEARCH_URL = "https://www.leroymerlin.es/search?q={ean}"
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+BLOCKED_URL_PARTS = (
+    "googletagmanager",
+    "google-analytics",
+    "doubleclick",
+    "facebook.net",
+    "hotjar",
+    "newrelic",
+    "contentsquare",
+)
 
 
 @dataclass
@@ -371,11 +381,37 @@ def minimize_chromium_window(context, page) -> None:
         pass
 
 
+def install_lightweight_routes(context) -> None:
+    def handle_route(route) -> None:
+        try:
+            request = route.request
+            url = request.url.lower()
+            if request.resource_type in BLOCKED_RESOURCE_TYPES or any(part in url for part in BLOCKED_URL_PARTS):
+                route.abort()
+            else:
+                route.continue_()
+        except Exception:
+            pass
+
+    context.route("**/*", handle_route)
+
+
 class LeroyChecker:
-    def __init__(self, products: list[InputProduct], expected_seller: str, delay: float):
+    def __init__(
+        self,
+        products: list[InputProduct],
+        expected_seller: str,
+        delay: float,
+        nav_timeout: float = 18.0,
+        retry_timeout: float = 35.0,
+        block_assets: bool = True,
+    ):
         self.products = products
         self.expected_seller = expected_seller
         self.delay = delay
+        self.nav_timeout_ms = int(max(nav_timeout, 5.0) * 1000)
+        self.retry_timeout_ms = int(max(retry_timeout, nav_timeout, 5.0) * 1000)
+        self.block_assets = block_assets
         self.stop_requested = False
         self.run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
         self.summary_path = self.run_dir / "summary_live.csv"
@@ -406,11 +442,13 @@ class LeroyChecker:
                 timezone_id="Europe/Madrid",
                 args=["--disable-blink-features=AutomationControlled", "--start-minimized"],
             )
+            if self.block_assets:
+                install_lightweight_routes(context)
             page = context.pages[0] if context.pages else context.new_page()
             minimize_chromium_window(context, page)
-            page.set_default_timeout(45_000)
+            page.set_default_timeout(self.retry_timeout_ms)
             try:
-                page.goto(LEROY_HOME_URL, wait_until="domcontentloaded", timeout=45_000)
+                page.goto(LEROY_HOME_URL, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
             except PlaywrightTimeoutError:
                 pass
 
@@ -420,7 +458,7 @@ class LeroyChecker:
                 item_started = time.monotonic()
                 url = LEROY_SEARCH_URL.format(ean=product.ean)
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
                 except PlaywrightError:
                     try:
                         page.close()
@@ -428,9 +466,9 @@ class LeroyChecker:
                         pass
                     page = context.new_page()
                     minimize_chromium_window(context, page)
-                    page.set_default_timeout(45_000)
+                    page.set_default_timeout(self.retry_timeout_ms)
                     try:
-                        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                        page.goto(url, wait_until="domcontentloaded", timeout=self.retry_timeout_ms)
                     except PlaywrightError as exc:
                         row = DashboardResult(
                             ean=product.ean,

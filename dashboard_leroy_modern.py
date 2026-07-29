@@ -202,8 +202,21 @@ class ModernDashboard(ctk.CTk):
         ).pack(anchor="w", padx=22, pady=(2, 10))
         self.cache_ttl_var = ctk.StringVar(value="24")
         ctk.CTkEntry(sidebar, textvariable=self.cache_ttl_var, placeholder_text="TTL cache horas", height=38).pack(
-            fill="x", padx=22
+            fill="x", padx=22, pady=(0, 10)
         )
+        self.nav_timeout_var = ctk.StringVar(value="18")
+        ctk.CTkEntry(sidebar, textvariable=self.nav_timeout_var, placeholder_text="Timeout navegador", height=38).pack(
+            fill="x", padx=22, pady=(0, 10)
+        )
+        self.block_assets_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            sidebar,
+            text="Bloquear assets pesados",
+            variable=self.block_assets_var,
+            text_color="#D9F0E0",
+            fg_color=LEROY,
+            hover_color="#114D30",
+        ).pack(anchor="w", padx=22)
 
         actions = ctk.CTkFrame(sidebar, fg_color="transparent")
         actions.pack(side="bottom", fill="x", padx=22, pady=24)
@@ -527,6 +540,10 @@ class ModernDashboard(ctk.CTk):
             cache_ttl = float(self.cache_ttl_var.get().replace(",", "."))
         except ValueError:
             cache_ttl = 24.0
+        try:
+            nav_timeout = float(self.nav_timeout_var.get().replace(",", "."))
+        except ValueError:
+            nav_timeout = 18.0
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.tree.delete(*self.tree.get_children())
@@ -561,7 +578,14 @@ class ModernDashboard(ctk.CTk):
             self.progress.set(1)
             self.progress_text.set(f"Terminado sin navegador: {resolved} resueltos por cache/feed")
             return
-        self.checker = LeroyChecker(products_to_check, expected_seller, delay)
+        self.checker = LeroyChecker(
+            products_to_check,
+            expected_seller,
+            delay,
+            nav_timeout=nav_timeout,
+            retry_timeout=max(nav_timeout * 2, 30.0),
+            block_assets=self.block_assets_var.get(),
+        )
         self.worker = threading.Thread(target=self.checker.run, args=(self.events,), daemon=True)
         self.worker.start()
         skipped = self.cached_count + self.direct_count

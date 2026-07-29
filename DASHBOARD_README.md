@@ -43,6 +43,23 @@ fase1/offer_cache.sqlite
 
 Este archivo no se versiona.
 
+## Fase 2: navegador ligero
+
+La app reduce el coste de cada producto que si necesita Chromium:
+
+- `Timeout navegador`: por defecto `18` segundos en el primer intento.
+- Reintento automatico mas largo si la primera navegacion falla.
+- `Bloquear assets pesados`: activado por defecto.
+
+Se bloquean recursos no necesarios para la decision comercial:
+
+- imagenes;
+- video/media;
+- fuentes;
+- analitica/tracking conocido.
+
+No se bloquea JavaScript general ni componentes de sesion/challenge, para no degradar la precision ni provocar falsos negativos.
+
 ## Shoppingfeed vivo
 
 La URL privada del catalogo no se guarda en codigo. Configurala de una de estas formas:
