@@ -26,7 +26,12 @@ CACHE_DB_PATH = FASE_DIR / "offer_cache.sqlite"
 LOCAL_SETTINGS_PATH = BASE_DIR / "local_settings.json"
 LEROY_HOME_URL = "https://www.leroymerlin.es/"
 LEROY_SEARCH_URL = "https://www.leroymerlin.es/search?q={ean}"
-BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+ALLOWED_EXTERNAL_HOST_PARTS = (
+    "leroymerlin.es",
+    "akamaihd.net",
+    "captcha-delivery.com",
+)
 BLOCKED_URL_PARTS = (
     "googletagmanager",
     "google-analytics",
@@ -560,12 +565,18 @@ def minimize_chromium_window(context, page) -> None:
         pass
 
 
-def install_lightweight_routes(context) -> None:
+def install_lightweight_routes(context, minimal_data_mode: bool = True) -> None:
     def handle_route(route) -> None:
         try:
             request = route.request
             url = request.url.lower()
+            host = ""
+            match = re.match(r"^https?://([^/]+)", url)
+            if match:
+                host = match.group(1)
             if request.resource_type in BLOCKED_RESOURCE_TYPES or any(part in url for part in BLOCKED_URL_PARTS):
+                route.abort()
+            elif minimal_data_mode and host and not any(part in host for part in ALLOWED_EXTERNAL_HOST_PARTS):
                 route.abort()
             else:
                 route.continue_()
@@ -584,6 +595,8 @@ class LeroyChecker:
         nav_timeout: float = 18.0,
         retry_timeout: float = 35.0,
         block_assets: bool = True,
+        minimal_data_mode: bool = True,
+        data_settle_ms: int = 700,
         worker_count: int = 1,
         circuit_breaker_threshold: int = 4,
     ):
@@ -593,6 +606,8 @@ class LeroyChecker:
         self.nav_timeout_ms = int(max(nav_timeout, 5.0) * 1000)
         self.retry_timeout_ms = int(max(retry_timeout, nav_timeout, 5.0) * 1000)
         self.block_assets = block_assets
+        self.minimal_data_mode = minimal_data_mode
+        self.data_settle_ms = max(0, min(int(data_settle_ms), 3000))
         self.worker_configs = load_worker_configs(worker_count)
         self.active_worker_configs = [config for config in self.worker_configs if config.enabled]
         if not self.active_worker_configs:
@@ -627,7 +642,7 @@ class LeroyChecker:
             args=["--disable-blink-features=AutomationControlled", "--start-minimized"],
         )
         if self.block_assets:
-            install_lightweight_routes(context)
+            install_lightweight_routes(context, self.minimal_data_mode)
         page = context.pages[0] if context.pages else context.new_page()
         minimize_chromium_window(context, page)
         page.set_default_timeout(self.retry_timeout_ms)
@@ -635,7 +650,20 @@ class LeroyChecker:
             page.goto(LEROY_HOME_URL, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
         except PlaywrightTimeoutError:
             pass
+        self.settle_and_stop(page)
         return context, page
+
+    def settle_and_stop(self, page) -> None:
+        if self.data_settle_ms:
+            try:
+                page.wait_for_timeout(self.data_settle_ms)
+            except Exception:
+                pass
+        if self.minimal_data_mode:
+            try:
+                page.evaluate("window.stop()")
+            except Exception:
+                pass
 
     def check_one_product(self, context, page, product: InputProduct, index: int, PlaywrightError) -> tuple[DashboardResult, object]:
         item_started = time.monotonic()
@@ -675,6 +703,7 @@ class LeroyChecker:
                 )
                 return row, page
 
+        self.settle_and_stop(page)
         content = page.content()
         title = page.title()
         final_url = page.url

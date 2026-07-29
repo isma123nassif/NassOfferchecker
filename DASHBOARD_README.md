@@ -60,16 +60,20 @@ La app reduce el coste de cada producto que si necesita Chromium:
 
 - `Timeout navegador`: por defecto `18` segundos en el primer intento.
 - Reintento automatico mas largo si la primera navegacion falla.
-- `Bloquear assets pesados`: activado por defecto.
+- `Modo datos minimos`: activado por defecto.
+- `Render ms`: espera corta antes de cortar cargas tardias, por defecto `700`.
 
 Se bloquean recursos no necesarios para la decision comercial:
 
 - imagenes;
 - video/media;
 - fuentes;
+- CSS;
 - analitica/tracking conocido.
 
-No se bloquea JavaScript general ni componentes de sesion/challenge, para no degradar la precision ni provocar falsos negativos.
+Tambien se bloquean dominios externos no esenciales. Se conserva JavaScript general y componentes de sesion/challenge.
+
+Sube `Render ms` a `1000-1500` si ves muchos `INCIERTA` por HTML incompleto.
 
 ## Fase 3: workers controlados
 

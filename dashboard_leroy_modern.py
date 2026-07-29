@@ -230,12 +230,16 @@ class ModernDashboard(ctk.CTk):
         self.block_assets_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             sidebar,
-            text="Bloquear assets pesados",
+            text="Modo datos minimos",
             variable=self.block_assets_var,
             text_color="#D9F0E0",
             fg_color=LEROY,
             hover_color="#114D30",
-        ).pack(anchor="w", padx=22)
+        ).pack(anchor="w", padx=22, pady=(0, 10))
+        self.data_settle_var = ctk.StringVar(value="700")
+        ctk.CTkEntry(sidebar, textvariable=self.data_settle_var, placeholder_text="Render ms", height=38).pack(
+            fill="x", padx=22
+        )
 
         actions = ctk.CTkFrame(sidebar, fg_color="transparent")
         actions.pack(side="bottom", fill="x", padx=22, pady=24)
@@ -607,6 +611,12 @@ class ModernDashboard(ctk.CTk):
         except ValueError:
             nav_timeout = 18.0
         try:
+            data_settle_ms = int(float(self.data_settle_var.get().replace(",", ".")))
+        except ValueError:
+            data_settle_ms = 700
+        data_settle_ms = max(0, min(data_settle_ms, 3000))
+        self.data_settle_var.set(str(data_settle_ms))
+        try:
             worker_count = int(float(self.worker_count_var.get().replace(",", ".")))
         except ValueError:
             worker_count = 10
@@ -662,6 +672,8 @@ class ModernDashboard(ctk.CTk):
             nav_timeout=nav_timeout,
             retry_timeout=max(nav_timeout * 2, 30.0),
             block_assets=self.block_assets_var.get(),
+            minimal_data_mode=self.block_assets_var.get(),
+            data_settle_ms=data_settle_ms,
             worker_count=worker_count,
             circuit_breaker_threshold=circuit_threshold,
         )

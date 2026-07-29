@@ -133,10 +133,21 @@ Para los productos que si requieren navegador:
 
 - Timeout inicial configurable, por defecto `18` segundos.
 - Reintento automatico mas largo.
-- Bloqueo de recursos pesados: imagenes, media, fuentes y tracking conocido.
+- `Modo datos minimos`: activado por defecto.
+- Bloqueo de recursos pesados: imagenes, media, fuentes, CSS y tracking conocido.
+- Bloqueo de dominios externos no esenciales.
+- Corte de cargas tardias con `window.stop()` tras una ventana corta de render.
 - Chromium se abre minimizado para no molestar al usuario.
 
-No se bloquea JavaScript general ni mecanismos de sesion, para no degradar la precision del diagnostico.
+La decision comercial solo necesita seller, precio y disponibilidad. Por eso el modo minimo intenta conservar HTML/JSON-LD, JavaScript necesario de Leroy, senales de challenge/DataDome y endpoints propios de Leroy.
+
+Control `Render ms`:
+
+- defecto: `700`;
+- bajar si la pagina ya trae los datos en HTML;
+- subir a `1000-1500` si aparecen demasiados `INCIERTA` por HTML incompleto.
+
+No se bloquea JavaScript general ni mecanismos de sesion/challenge, para no degradar la precision del diagnostico.
 
 ## Fase 3: workers controlados
 
