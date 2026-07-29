@@ -68,6 +68,59 @@ class DashboardResult:
     html_path: str
 
 
+@dataclass
+class WorkerConfig:
+    id: int
+    enabled: bool = True
+    proxy_server: str = ""
+    proxy_username: str = ""
+    proxy_password: str = ""
+    user_agent: str = ""
+
+    @property
+    def proxy_configured(self) -> bool:
+        return bool(self.proxy_server.strip())
+
+    @property
+    def user_agent_configured(self) -> bool:
+        return bool(self.user_agent.strip())
+
+
+def read_local_settings() -> dict:
+    if not LOCAL_SETTINGS_PATH.exists():
+        return {}
+    try:
+        return json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_worker_configs(worker_count: int) -> list[WorkerConfig]:
+    worker_count = max(1, min(int(worker_count), 10))
+    settings = read_local_settings()
+    configured: dict[int, WorkerConfig] = {}
+    raw_workers = settings.get("workers", [])
+    if isinstance(raw_workers, list):
+        for item in raw_workers:
+            if not isinstance(item, dict):
+                continue
+            try:
+                worker_id = int(item.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            if worker_id < 1 or worker_id > 10:
+                continue
+            configured[worker_id] = WorkerConfig(
+                id=worker_id,
+                enabled=bool(item.get("enabled", True)),
+                proxy_server=str(item.get("proxy_server", "") or "").strip(),
+                proxy_username=str(item.get("proxy_username", "") or "").strip(),
+                proxy_password=str(item.get("proxy_password", "") or "").strip(),
+                user_agent=str(item.get("user_agent", "") or "").strip(),
+            )
+    return [configured.get(worker_id, WorkerConfig(id=worker_id)) for worker_id in range(1, worker_count + 1)]
+
+
 def normalize(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).casefold()
 
@@ -395,12 +448,7 @@ class AlertNotifier:
         self.sent_at: dict[str, float] = {}
 
     def _load_settings(self) -> dict:
-        if not LOCAL_SETTINGS_PATH.exists():
-            return {}
-        try:
-            return json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            return {}
+        return read_local_settings()
 
     def _env(self, name: str) -> str:
         import os
@@ -545,7 +593,11 @@ class LeroyChecker:
         self.nav_timeout_ms = int(max(nav_timeout, 5.0) * 1000)
         self.retry_timeout_ms = int(max(retry_timeout, nav_timeout, 5.0) * 1000)
         self.block_assets = block_assets
-        self.worker_count = max(1, min(int(worker_count), 10))
+        self.worker_configs = load_worker_configs(worker_count)
+        self.active_worker_configs = [config for config in self.worker_configs if config.enabled]
+        if not self.active_worker_configs:
+            self.active_worker_configs = [WorkerConfig(id=1)]
+        self.worker_count = len(self.active_worker_configs)
         self.circuit_breaker_threshold = max(1, int(circuit_breaker_threshold))
         self.stop_requested = False
         self.circuit_open = False
@@ -728,16 +780,28 @@ class LeroyChecker:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         events.put(("run_dir", str(self.run_dir)))
         events.put(("phase3", self.worker_count, self.circuit_breaker_threshold))
+        for config in self.worker_configs:
+            events.put(
+                (
+                    "worker_config",
+                    config.id,
+                    config.enabled,
+                    config.proxy_configured,
+                    config.user_agent_configured,
+                )
+            )
+            if not config.enabled:
+                events.put(("worker_status", config.id, "desactivado"))
 
         work_queue: queue.Queue = queue.Queue()
         for index, product in enumerate(self.products, start=1):
             work_queue.put((index, product))
 
         worker_threads = []
-        for worker_id in range(1, self.worker_count + 1):
+        for config in self.active_worker_configs:
             thread = threading.Thread(
                 target=self.browser_worker,
-                args=(worker_id, work_queue, events, PlaywrightError, PlaywrightTimeoutError, sync_playwright),
+                args=(config.id, work_queue, events, PlaywrightError, PlaywrightTimeoutError, sync_playwright),
                 daemon=True,
             )
             worker_threads.append(thread)

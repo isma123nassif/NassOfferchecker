@@ -2,5 +2,23 @@
   "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_TOKEN",
   "slack_webhook_url": "https://hooks.slack.com/services/PRIVATE/WEBHOOK/URL",
   "alerts_enabled": true,
-  "alert_cooldown_minutes": 15
+  "alert_cooldown_minutes": 15,
+  "workers": [
+    {
+      "id": 1,
+      "enabled": true,
+      "proxy_server": "",
+      "proxy_username": "",
+      "proxy_password": "",
+      "user_agent": ""
+    },
+    {
+      "id": 2,
+      "enabled": true,
+      "proxy_server": "",
+      "proxy_username": "",
+      "proxy_password": "",
+      "user_agent": ""
+    }
+  ]
 }

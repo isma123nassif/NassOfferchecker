@@ -92,6 +92,36 @@ Recomendacion operativa:
 - bajar a `7`, `5`, `3` o `1` si aparecen bloqueos o lentitud local;
 - mantener el corte tecnico en `3-5`.
 
+## Fase 3.1/3.2: configuracion y visibilidad de workers
+
+El archivo local `local_settings.json` puede incluir:
+
+```json
+{
+  "workers": [
+    {
+      "id": 1,
+      "enabled": true,
+      "proxy_server": "",
+      "proxy_username": "",
+      "proxy_password": "",
+      "user_agent": ""
+    }
+  ]
+}
+```
+
+La UI muestra chips por worker:
+
+- `activo`;
+- `cerrado`;
+- `desactivado`;
+- `pausado`;
+- `P:si/no` para proxy configurado;
+- `UA:def/custom` para User-Agent configurado.
+
+No se muestran credenciales ni URLs de proxy.
+
 ## Alertas Slack
 
 Canal recomendado: Slack Incoming Webhook.

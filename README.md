@@ -155,6 +155,33 @@ Valores recomendados:
 
 Si aparecen varios `INCIERTA`, captchas, DataDome, timeouts o errores seguidos, se activa el circuit breaker y se deja de tomar trabajo nuevo.
 
+### Configuracion local por worker
+
+`local_settings.json` puede definir workers concretos. Esta configuracion no se versiona.
+
+```json
+{
+  "workers": [
+    {
+      "id": 1,
+      "enabled": true,
+      "proxy_server": "",
+      "proxy_username": "",
+      "proxy_password": "",
+      "user_agent": ""
+    }
+  ]
+}
+```
+
+En la fase 3.1/3.2 la app ya lee esta configuracion y la muestra saneada en UI:
+
+- `P:si/no`: indica si el worker tiene proxy configurado, sin mostrar host ni credenciales.
+- `UA:def/custom`: indica si el worker tiene User-Agent propio, sin imprimirlo.
+- `enabled=false`: el worker aparece como desactivado y no se lanza.
+
+La aplicacion de proxy/User-Agent dentro de Playwright se deja para la siguiente fase, tras validar que la visibilidad y el estado por worker funcionan correctamente.
+
 ## Alertas Slack
 
 La app puede enviar una alerta a Slack cuando detecta senales tecnicas:

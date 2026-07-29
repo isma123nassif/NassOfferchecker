@@ -129,6 +129,8 @@ class ModernDashboard(ctk.CTk):
         self.row_lights: dict[str, str] = {}
         self.row_order: list[str] = []
         self.active_filter: str | None = None
+        self.worker_chips: dict[int, ctk.CTkLabel] = {}
+        self.worker_meta: dict[int, dict[str, object]] = {}
         self.cached_count = 0
         self.direct_count = 0
         self.live_total = 0
@@ -299,6 +301,11 @@ class ModernDashboard(ctk.CTk):
         self.progress = ctk.CTkProgressBar(progress_panel, height=8, progress_color=LEROY)
         self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
         self.progress.set(0)
+        self.worker_status_panel = ctk.CTkFrame(progress_panel, fg_color="transparent")
+        self.worker_status_panel.grid(row=2, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        for col in range(5):
+            self.worker_status_panel.grid_columnconfigure(col, weight=1)
+        self.reset_worker_chips(10)
 
         table_panel = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         table_panel.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 24))
@@ -605,6 +612,7 @@ class ModernDashboard(ctk.CTk):
             worker_count = 10
         worker_count = max(1, min(worker_count, 10))
         self.worker_count_var.set(str(worker_count))
+        self.reset_worker_chips(worker_count)
         try:
             circuit_threshold = int(float(self.circuit_threshold_var.get().replace(",", ".")))
         except ValueError:
@@ -673,6 +681,74 @@ class ModernDashboard(ctk.CTk):
             card.set_active(self.active_filter == key)
         self.update_filter_title()
 
+    def reset_worker_chips(self, count: int):
+        if not hasattr(self, "worker_status_panel"):
+            return
+        for child in self.worker_status_panel.winfo_children():
+            child.destroy()
+        self.worker_chips.clear()
+        self.worker_meta.clear()
+        for worker_id in range(1, max(1, min(count, 10)) + 1):
+            chip = ctk.CTkLabel(
+                self.worker_status_panel,
+                text=f"W{worker_id} pendiente | P:no | UA:def",
+                fg_color="#F3F4F6",
+                text_color=MUTED,
+                corner_radius=8,
+                height=26,
+                font=("Segoe UI", 10),
+            )
+            chip.grid(row=(worker_id - 1) // 5, column=(worker_id - 1) % 5, sticky="ew", padx=(0, 8), pady=(0, 6))
+            self.worker_chips[worker_id] = chip
+            self.worker_meta[worker_id] = {
+                "enabled": True,
+                "proxy": False,
+                "ua": False,
+                "status": "pendiente",
+            }
+
+    def update_worker_chip(
+        self,
+        worker_id: int,
+        status: str | None = None,
+        enabled: bool | None = None,
+        proxy_configured: bool | None = None,
+        user_agent_configured: bool | None = None,
+    ):
+        if worker_id not in self.worker_chips:
+            return
+        meta = self.worker_meta.setdefault(worker_id, {})
+        if status is not None:
+            meta["status"] = status
+        if enabled is not None:
+            meta["enabled"] = enabled
+        if proxy_configured is not None:
+            meta["proxy"] = proxy_configured
+        if user_agent_configured is not None:
+            meta["ua"] = user_agent_configured
+
+        current_status = str(meta.get("status", "pendiente"))
+        proxy = "si" if meta.get("proxy") else "no"
+        ua = "custom" if meta.get("ua") else "def"
+        enabled_now = bool(meta.get("enabled", True))
+        colors = {
+            "pendiente": ("#F3F4F6", MUTED),
+            "activo": ("#DCFCE7", "#166534"),
+            "cerrado": ("#E5E7EB", "#4B5563"),
+            "desactivado": ("#F3F4F6", "#98A2B3"),
+            "bloqueado": ("#FEE2E2", "#991B1B"),
+            "pausado": ("#FEF3C7", "#92400E"),
+            "error": ("#FEE2E2", "#991B1B"),
+        }
+        if not enabled_now:
+            current_status = "desactivado"
+        fg, text_color = colors.get(current_status, ("#F3F4F6", MUTED))
+        self.worker_chips[worker_id].configure(
+            text=f"W{worker_id} {current_status} | P:{proxy} | UA:{ua}",
+            fg_color=fg,
+            text_color=text_color,
+        )
+
     def set_filter(self, light: str | None):
         self.active_filter = None if self.active_filter == light else light
         self.apply_filter()
@@ -720,9 +796,21 @@ class ModernDashboard(ctk.CTk):
                     self.subtitle_var.set(f"Salida: {event[1]}")
                 elif kind == "phase3":
                     self.progress_text.set(f"Fase 3 activa: {event[1]} worker(s), corte tecnico {event[2]}")
+                elif kind == "worker_config":
+                    self.update_worker_chip(
+                        event[1],
+                        enabled=event[2],
+                        proxy_configured=event[3],
+                        user_agent_configured=event[4],
+                    )
                 elif kind == "worker_status":
+                    self.update_worker_chip(event[1], status=event[2])
                     self.subtitle_var.set(f"Worker {event[1]} {event[2]}")
                 elif kind == "circuit_breaker":
+                    for worker_id in self.worker_chips:
+                        status = self.worker_meta.get(worker_id, {}).get("status")
+                        if status == "activo":
+                            self.update_worker_chip(worker_id, status="pausado")
                     self.progress_text.set(f"Corte tecnico activado tras {event[3]} senales: EAN {event[1]}")
                 elif kind == "error":
                     messagebox.showerror("Error", event[1])
