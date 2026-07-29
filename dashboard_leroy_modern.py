@@ -264,8 +264,27 @@ class ModernDashboard(ctk.CTk):
 
         table_panel = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         table_panel.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 24))
-        table_panel.grid_rowconfigure(0, weight=1)
+        table_panel.grid_rowconfigure(1, weight=1)
         table_panel.grid_columnconfigure(0, weight=1)
+
+        table_toolbar = ctk.CTkFrame(table_panel, fg_color="transparent")
+        table_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 0))
+        table_toolbar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(table_toolbar, text="Resultados", font=("Segoe UI", 13, "bold"), text_color=TEXT).grid(
+            row=0, column=0, sticky="w"
+        )
+        ctk.CTkButton(
+            table_toolbar,
+            text="Copiar EAN",
+            width=104,
+            height=30,
+            fg_color="#FFFFFF",
+            text_color=TEXT,
+            hover_color="#F3F4F6",
+            border_width=1,
+            border_color=BORDER,
+            command=self.copy_selected_ean,
+        ).grid(row=0, column=1, sticky="e")
 
         self.setup_tree_style()
         columns = ("light", "ean", "reference", "stock", "feed_price", "status", "seller", "market_price", "reason")
@@ -299,11 +318,12 @@ class ModernDashboard(ctk.CTk):
         self.tree.tag_configure("yellow", foreground="#7A4B00")
         self.tree.tag_configure("red", foreground="#842029")
         self.tree.tag_configure("gray", foreground="#4B5563")
-        self.tree.grid(row=0, column=0, sticky="nsew", padx=(14, 0), pady=14)
+        self.tree.grid(row=1, column=0, sticky="nsew", padx=(14, 0), pady=14)
         scroll = ttk.Scrollbar(table_panel, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
-        scroll.grid(row=0, column=1, sticky="ns", padx=(0, 14), pady=14)
+        scroll.grid(row=1, column=1, sticky="ns", padx=(0, 14), pady=14)
         self.tree.bind("<Double-1>", self.open_selected_url)
+        self.tree.bind("<Control-c>", self.copy_selected_ean)
 
     def setup_tree_style(self):
         style = ttk.Style(self)
@@ -617,6 +637,21 @@ class ModernDashboard(ctk.CTk):
         url = self.row_urls.get(selected[0])
         if url:
             webbrowser.open(url)
+
+    def copy_selected_ean(self, _event=None):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        values = self.tree.item(selected[0], "values")
+        if len(values) < 2:
+            return
+        ean = str(values[1]).strip()
+        if not ean:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(ean)
+        self.progress_text.set(f"EAN copiado: {ean}")
+        return "break"
 
 
 def main():
