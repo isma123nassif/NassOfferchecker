@@ -193,6 +193,25 @@ En la fase 3.1/3.2 la app ya lee esta configuracion y la muestra saneada en UI:
 
 La aplicacion de proxy/User-Agent dentro de Playwright se deja para la siguiente fase, tras validar que la visibilidad y el estado por worker funcionan correctamente.
 
+### Estado actual de la fase 3
+
+La cola de trabajo es compartida: cada worker toma el siguiente producto pendiente y no repite productos ya tomados por otros workers.
+
+El texto superior de la ventana puede mostrar el ultimo evento recibido, por ejemplo `Worker 1 activo`. Ese texto no representa el estado agregado de todos los workers. El estado real de cada worker esta en los chips inferiores:
+
+```text
+W1 activo | P:no | UA:def
+W2 activo | P:no | UA:def
+```
+
+Pendiente recomendado antes de avanzar:
+
+- mostrar un resumen agregado tipo `2 workers activos`;
+- separar la ruta de salida del estado de workers;
+- anadir warm-up por worker antes de consumir la cola;
+- pausar workers individualmente cuando reciban challenge;
+- aplicar proxy/User-Agent persistente por worker en Playwright.
+
 ## Alertas Slack
 
 La app puede enviar una alerta a Slack cuando detecta senales tecnicas:
@@ -232,6 +251,7 @@ Antes de publicar se debe comprobar que no aparecen URLs privadas ni webhooks re
 ## Documentacion adicional
 
 - `DASHBOARD_README.md`: guia de uso del dashboard.
+- `MEMORY.md`: memoria operativa para retomar el proyecto.
 - `fase1/*.md`: analisis, decisiones tecnicas y resultados de pruebas previas.
 - `fase1/run_playwright_bootstrap.py`: runner Playwright de fase 1.
 - `fase1/run_local_poc.py`: prueba HTTP local.

@@ -126,6 +126,15 @@ La UI muestra chips por worker:
 
 No se muestran credenciales ni URLs de proxy.
 
+Nota de UI actual: el subtitulo superior puede mostrar el ultimo evento procesado, por ejemplo `Worker 1 activo`. No es un contador global. Para saber cuantos workers estan realmente vivos, mira los chips inferiores de worker.
+
+Pendiente de mejora:
+
+- sustituir ese subtitulo por un resumen agregado;
+- ejecutar warm-up por worker antes de consumir productos;
+- pausar solo el worker que reciba challenge;
+- aplicar proxy/User-Agent persistente por worker en Playwright.
+
 ## Alertas Slack
 
 Canal recomendado: Slack Incoming Webhook.
