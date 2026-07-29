@@ -22,6 +22,17 @@ python .\dashboard_leroy_modern.py
 4. Opcional: ajusta `Seller esperado`, por defecto `NEWLUX GROUP`.
 5. Pulsa `Analizar`.
 
+## Filtros visuales
+
+Las tarjetas de semaforo son clicables:
+
+- `Correctos`: muestra solo verdes.
+- `Revisar`: muestra solo amarillos.
+- `Fuera`: muestra solo rojos.
+- `Tecnico`: muestra solo grises.
+
+Pulsa la misma tarjeta otra vez o el boton `Todos` para quitar el filtro.
+
 ## Fase 1: aceleracion diferencial
 
 La app evita abrir Chromium cuando puede resolver el producto antes:

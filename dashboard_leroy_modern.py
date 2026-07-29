@@ -79,19 +79,33 @@ class MarketplaceDialog(ctk.CTkToplevel):
 
 
 class MetricCard(ctk.CTkFrame):
-    def __init__(self, master, label: str, color: str):
+    def __init__(self, master, label: str, color: str, command=None):
         super().__init__(master, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         self.color = color
+        self.command = command
         self.indicator = ctk.CTkFrame(self, width=5, fg_color=color, corner_radius=5)
         self.indicator.pack(side="left", fill="y", padx=(0, 12))
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.pack(side="left", fill="both", expand=True, padx=(0, 14), pady=12)
         self.value = ctk.CTkLabel(content, text="0", font=("Segoe UI", 24, "bold"), text_color=TEXT)
         self.value.pack(anchor="w")
-        ctk.CTkLabel(content, text=label, font=("Segoe UI", 12), text_color=MUTED).pack(anchor="w")
+        self.label = ctk.CTkLabel(content, text=label, font=("Segoe UI", 12), text_color=MUTED)
+        self.label.pack(anchor="w")
+        self.filter_hint = ctk.CTkLabel(content, text="Click para filtrar", font=("Segoe UI", 10), text_color="#98A2B3")
+        self.filter_hint.pack(anchor="w", pady=(10, 0))
+        for widget in (self, self.indicator, content, self.value, self.label, self.filter_hint):
+            widget.bind("<Button-1>", self._clicked)
 
     def set_value(self, value: int):
         self.value.configure(text=str(value))
+
+    def set_active(self, active: bool):
+        self.configure(border_color=self.color if active else BORDER, border_width=2 if active else 1)
+        self.filter_hint.configure(text="Filtro activo" if active else "Click para filtrar")
+
+    def _clicked(self, _event=None):
+        if self.command:
+            self.command()
 
 
 class ModernDashboard(ctk.CTk):
@@ -112,6 +126,9 @@ class ModernDashboard(ctk.CTk):
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.row_urls: dict[str, str] = {}
         self.row_items: dict[str, str] = {}
+        self.row_lights: dict[str, str] = {}
+        self.row_order: list[str] = []
+        self.active_filter: str | None = None
         self.cached_count = 0
         self.direct_count = 0
         self.live_total = 0
@@ -256,10 +273,10 @@ class ModernDashboard(ctk.CTk):
         for i in range(4):
             metrics.grid_columnconfigure(i, weight=1)
         self.cards = {
-            "green": MetricCard(metrics, "Correctos", GREEN),
-            "yellow": MetricCard(metrics, "Revisar", YELLOW),
-            "red": MetricCard(metrics, "Fuera", RED),
-            "gray": MetricCard(metrics, "Tecnico", GRAY),
+            "green": MetricCard(metrics, "Correctos", GREEN, command=lambda: self.set_filter("green")),
+            "yellow": MetricCard(metrics, "Revisar", YELLOW, command=lambda: self.set_filter("yellow")),
+            "red": MetricCard(metrics, "Fuera", RED, command=lambda: self.set_filter("red")),
+            "gray": MetricCard(metrics, "Tecnico", GRAY, command=lambda: self.set_filter("gray")),
         }
         for i, key in enumerate(("green", "yellow", "red", "gray")):
             self.cards[key].grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
@@ -283,9 +300,22 @@ class ModernDashboard(ctk.CTk):
         table_toolbar = ctk.CTkFrame(table_panel, fg_color="transparent")
         table_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 0))
         table_toolbar.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(table_toolbar, text="Resultados", font=("Segoe UI", 13, "bold"), text_color=TEXT).grid(
+        self.results_title_var = ctk.StringVar(value="Resultados")
+        ctk.CTkLabel(table_toolbar, textvariable=self.results_title_var, font=("Segoe UI", 13, "bold"), text_color=TEXT).grid(
             row=0, column=0, sticky="w"
         )
+        ctk.CTkButton(
+            table_toolbar,
+            text="Todos",
+            width=78,
+            height=30,
+            fg_color="#FFFFFF",
+            text_color=TEXT,
+            hover_color="#F3F4F6",
+            border_width=1,
+            border_color=BORDER,
+            command=lambda: self.set_filter(None),
+        ).grid(row=0, column=1, sticky="e", padx=(0, 8))
         ctk.CTkButton(
             table_toolbar,
             text="Copiar EAN",
@@ -297,7 +327,7 @@ class ModernDashboard(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             command=self.copy_selected_ean,
-        ).grid(row=0, column=1, sticky="e")
+        ).grid(row=0, column=2, sticky="e")
 
         self.setup_tree_style()
         columns = ("light", "ean", "reference", "stock", "feed_price", "status", "seller", "market_price", "reason")
@@ -433,6 +463,10 @@ class ModernDashboard(ctk.CTk):
             values=("", product.ean, product.reference, product.quantity, product.price, "Pendiente", "", "", ""),
         )
         self.row_items[product.ean] = item
+        self.row_lights[item] = "pending"
+        self.row_order.append(item)
+        if self.active_filter is not None:
+            self.tree.detach(item)
         return item
 
     def build_feed_stock_result(self, product: InputProduct) -> DashboardResult:
@@ -462,6 +496,7 @@ class ModernDashboard(ctk.CTk):
         if not item:
             item = self.tree.insert("", "end")
             self.row_items[row.ean] = item
+            self.row_order.append(item)
         code, _label, _color = LIGHT_META.get(row.light, LIGHT_META["gray"])
         self.tree.item(
             item,
@@ -479,9 +514,14 @@ class ModernDashboard(ctk.CTk):
             tags=(row.light,),
         )
         self.row_urls[item] = row.final_url
+        self.row_lights[item] = row.light
         if row.light in self.counts:
             self.counts[row.light] += 1
             self.update_cards()
+        if self.active_filter is not None and row.light != self.active_filter:
+            self.tree.detach(item)
+        elif self.active_filter is not None:
+            self.tree.reattach(item, "", "end")
 
     def load_bulk(self):
         path = filedialog.askopenfilename(
@@ -498,8 +538,12 @@ class ModernDashboard(ctk.CTk):
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
         self.row_items.clear()
+        self.row_lights.clear()
+        self.row_order.clear()
+        self.active_filter = None
         for product in self.products:
             self.add_pending_row(product)
+        self.update_cards()
         self.progress.set(0)
         self.progress_text.set(f"{len(self.products)} productos cargados")
 
@@ -511,6 +555,9 @@ class ModernDashboard(ctk.CTk):
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
         self.row_items.clear()
+        self.row_lights.clear()
+        self.row_order.clear()
+        self.active_filter = None
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.progress.set(0)
@@ -549,6 +596,8 @@ class ModernDashboard(ctk.CTk):
         self.tree.delete(*self.tree.get_children())
         self.row_urls.clear()
         self.row_items.clear()
+        self.row_lights.clear()
+        self.row_order.clear()
         self.cached_count = 0
         self.direct_count = 0
         products_to_check: list[InputProduct] = []
@@ -599,6 +648,35 @@ class ModernDashboard(ctk.CTk):
     def update_cards(self):
         for key, card in self.cards.items():
             card.set_value(self.counts[key])
+            card.set_active(self.active_filter == key)
+        self.update_filter_title()
+
+    def set_filter(self, light: str | None):
+        self.active_filter = None if self.active_filter == light else light
+        self.apply_filter()
+        self.update_cards()
+
+    def update_filter_title(self):
+        if not hasattr(self, "results_title_var"):
+            return
+        if not self.active_filter:
+            self.results_title_var.set("Resultados")
+            return
+        _code, label, _color = LIGHT_META.get(self.active_filter, LIGHT_META["gray"])
+        visible = sum(1 for item in self.row_order if self.row_lights.get(item) == self.active_filter)
+        self.results_title_var.set(f"Resultados - {label} ({visible})")
+
+    def apply_filter(self):
+        for item in self.row_order:
+            light = self.row_lights.get(item, "pending")
+            should_show = self.active_filter is None or light == self.active_filter
+            try:
+                self.tree.detach(item)
+            except Exception:
+                continue
+            if should_show:
+                self.tree.reattach(item, "", "end")
+        self.update_filter_title()
 
     def process_events(self):
         try:
@@ -628,6 +706,9 @@ class ModernDashboard(ctk.CTk):
                     self.tree.delete(*self.tree.get_children())
                     self.row_urls.clear()
                     self.row_items.clear()
+                    self.row_lights.clear()
+                    self.row_order.clear()
+                    self.active_filter = None
                     self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
                     self.update_cards()
                     for product in self.products:
