@@ -8,6 +8,8 @@ import sqlite3
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from html import unescape
@@ -21,6 +23,7 @@ FASE_DIR = BASE_DIR / "fase1"
 PROFILE_DIR = FASE_DIR / "browser_profile_leroy"
 RUNS_DIR = FASE_DIR / "dashboard_runs"
 CACHE_DB_PATH = FASE_DIR / "offer_cache.sqlite"
+LOCAL_SETTINGS_PATH = BASE_DIR / "local_settings.json"
 LEROY_HOME_URL = "https://www.leroymerlin.es/"
 LEROY_SEARCH_URL = "https://www.leroymerlin.es/search?q={ean}"
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
@@ -185,7 +188,20 @@ def challenge_detected(content: str, title: str, url: str) -> bool:
     )
     if usable and has_product_signal and "please enable js" not in lowered:
         return False
-    markers = ["captcha-delivery.com", "please enable js", "var dd=", "var dd =", "access denied"]
+    markers = [
+        "captcha-delivery.com",
+        "please enable js",
+        "var dd=",
+        "var dd =",
+        "access denied",
+        "recaptcha",
+        "g-recaptcha",
+        "hcaptcha",
+        "are you human",
+        "unusual traffic",
+        "blocked",
+        "bot detection",
+    ]
     return any(marker in lowered for marker in markers)
 
 
@@ -367,6 +383,121 @@ class OfferCache:
             )
 
 
+class AlertNotifier:
+    def __init__(self):
+        self.settings = self._load_settings()
+        self.enabled = self._setting_bool("alerts_enabled", True)
+        self.slack_webhook_url = (
+            self._env("SLACK_WEBHOOK_URL")
+            or str(self.settings.get("slack_webhook_url", "") or "").strip()
+        )
+        self.cooldown_seconds = int(self._setting_float("alert_cooldown_minutes", 15.0) * 60)
+        self.sent_at: dict[str, float] = {}
+
+    def _load_settings(self) -> dict:
+        if not LOCAL_SETTINGS_PATH.exists():
+            return {}
+        try:
+            return json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _env(self, name: str) -> str:
+        import os
+
+        return os.environ.get(name, "").strip()
+
+    def _setting_bool(self, name: str, default: bool) -> bool:
+        value = self._env(name.upper())
+        if not value:
+            value = self.settings.get(name, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _setting_float(self, name: str, default: float) -> float:
+        value = self._env(name.upper())
+        if not value:
+            value = self.settings.get(name, default)
+        try:
+            return float(str(value).replace(",", "."))
+        except ValueError:
+            return default
+
+    def should_alert(self, row: DashboardResult) -> bool:
+        evidence = f"{row.status} {row.reason} {row.title} {row.final_url}".casefold()
+        markers = (
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "challenge",
+            "datadome",
+            "access denied",
+            "blocked",
+            "bloqueo",
+            "error de navegacion",
+            "timeout",
+            "please enable js",
+        )
+        return row.challenge_detected or row.status == "INCIERTA" or any(marker in evidence for marker in markers)
+
+    def notify_if_needed(self, row: DashboardResult, run_dir: Path, index: int, total: int) -> bool:
+        if not self.enabled or not self.slack_webhook_url or not self.should_alert(row):
+            return False
+        key = row.status if row.status else "technical_alert"
+        now = time.time()
+        if self.cooldown_seconds > 0 and now - self.sent_at.get(key, 0) < self.cooldown_seconds:
+            return False
+        self.sent_at[key] = now
+        return self.send_slack(row, run_dir, index, total)
+
+    def send_slack(self, row: DashboardResult, run_dir: Path, index: int, total: int) -> bool:
+        payload = {
+            "text": f"OfferChecker alerta: {row.status} en EAN {row.ean}",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*OfferChecker alerta*\nDetectado posible bloqueo/challenge en Leroy Merlin.",
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*EAN:*\n`{row.ean}`"},
+                        {"type": "mrkdwn", "text": f"*Estado:*\n`{row.status}`"},
+                        {"type": "mrkdwn", "text": f"*Progreso:*\n{index}/{total}"},
+                        {"type": "mrkdwn", "text": f"*Challenge:*\n{row.challenge_detected}"},
+                    ],
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Motivo:*\n{row.reason[:600]}"},
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn", "text": f"Run local: `{run_dir}`"},
+                        {"type": "mrkdwn", "text": f"URL: {row.final_url}"},
+                    ],
+                },
+            ],
+        }
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.slack_webhook_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return 200 <= response.status < 300
+        except (OSError, urllib.error.URLError):
+            return False
+
+
 def minimize_chromium_window(context, page) -> None:
     try:
         session = context.new_cdp_session(page)
@@ -416,6 +547,7 @@ class LeroyChecker:
         self.run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
         self.summary_path = self.run_dir / "summary_live.csv"
         self.cache = OfferCache()
+        self.alerts = AlertNotifier()
 
     def stop(self) -> None:
         self.stop_requested = True
@@ -492,6 +624,8 @@ class LeroyChecker:
                         )
                         write_dashboard_row(self.summary_path, row)
                         self.cache.put(product, self.expected_seller, row)
+                        if self.alerts.notify_if_needed(row, self.run_dir, index, len(self.products)):
+                            events.put(("alert_sent", row.ean, row.status))
                         events.put(("result", index, len(self.products), row))
                         time.sleep(self.delay)
                         continue
@@ -530,6 +664,8 @@ class LeroyChecker:
                 )
                 write_dashboard_row(self.summary_path, row)
                 self.cache.put(product, self.expected_seller, row)
+                if self.alerts.notify_if_needed(row, self.run_dir, index, len(self.products)):
+                    events.put(("alert_sent", row.ean, row.status))
                 events.put(("result", index, len(self.products), row))
                 if index < len(self.products):
                     time.sleep(self.delay)

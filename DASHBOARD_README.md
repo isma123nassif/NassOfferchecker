@@ -71,6 +71,38 @@ Se bloquean recursos no necesarios para la decision comercial:
 
 No se bloquea JavaScript general ni componentes de sesion/challenge, para no degradar la precision ni provocar falsos negativos.
 
+## Alertas Slack
+
+Canal recomendado: Slack Incoming Webhook.
+
+Configuracion:
+
+```json
+{
+  "slack_webhook_url": "https://hooks.slack.com/services/...",
+  "alerts_enabled": true,
+  "alert_cooldown_minutes": 15
+}
+```
+
+Tambien puedes usar variables de entorno:
+
+```powershell
+$env:SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/..."
+$env:ALERTS_ENABLED = "true"
+$env:ALERT_COOLDOWN_MINUTES = "15"
+```
+
+La alerta se envia cuando aparece una senal tecnica como:
+
+- `INCIERTA`;
+- challenge/captcha/reCAPTCHA/hCaptcha;
+- DataDome;
+- `access denied`;
+- bloqueo o timeout de navegacion.
+
+El webhook es secreto y debe quedarse en `local_settings.json` o variables de entorno. No se versiona.
+
 ## Shoppingfeed vivo
 
 La URL privada del catalogo no se guarda en codigo. Configurala de una de estas formas:

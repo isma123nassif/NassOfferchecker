@@ -698,6 +698,8 @@ class ModernDashboard(ctk.CTk):
                     self.subtitle_var.set(f"Salida: {event[1]}")
                 elif kind == "error":
                     messagebox.showerror("Error", event[1])
+                elif kind == "alert_sent":
+                    self.progress_text.set(f"Alerta enviada a Slack: EAN {event[1]} ({event[2]})")
                 elif kind == "catalog_progress":
                     self.progress_text.set(event[1])
                 elif kind == "catalog_loaded":

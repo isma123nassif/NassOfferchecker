@@ -1,3 +1,6 @@
 {
-  "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_TOKEN"
+  "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_TOKEN",
+  "slack_webhook_url": "https://hooks.slack.com/services/PRIVATE/WEBHOOK/URL",
+  "alerts_enabled": true,
+  "alert_cooldown_minutes": 15
 }
