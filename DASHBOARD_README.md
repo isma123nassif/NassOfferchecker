@@ -71,6 +71,28 @@ Se bloquean recursos no necesarios para la decision comercial:
 
 No se bloquea JavaScript general ni componentes de sesion/challenge, para no degradar la precision ni provocar falsos negativos.
 
+## Fase 3: workers controlados
+
+Controles junto a la barra de progreso:
+
+- `Workers`: navegadores paralelos, limitado de `1` a `3`.
+- `Corte tecnico`: numero de senales tecnicas consecutivas antes de parar el lote.
+
+Cada worker usa un perfil Chromium separado:
+
+```text
+fase1/browser_profile_leroy_worker_<n>
+```
+
+Estos perfiles no se versionan.
+
+Recomendacion operativa:
+
+- empezar en `1`;
+- probar `2` si no hay challenges;
+- usar `3` solo en sesiones estables;
+- mantener el corte tecnico en `3-5`.
+
 ## Alertas Slack
 
 Canal recomendado: Slack Incoming Webhook.

@@ -138,6 +138,24 @@ Para los productos que si requieren navegador:
 
 No se bloquea JavaScript general ni mecanismos de sesion, para no degradar la precision del diagnostico.
 
+## Fase 3: workers controlados
+
+La fase 3 permite revisar en paralelo con varios navegadores, cada uno con perfil Chromium separado.
+
+Controles:
+
+- `Workers`: numero de navegadores paralelos. Rango permitido: `1` a `3`.
+- `Corte tecnico`: numero de senales tecnicas consecutivas antes de parar el lote.
+
+Valores recomendados:
+
+- empezar con `1`;
+- subir a `2` si no hay challenges;
+- usar `3` solo si la sesion es estable;
+- mantener `Corte tecnico` entre `3` y `5`.
+
+Si aparecen varios `INCIERTA`, captchas, DataDome, timeouts o errores seguidos, se activa el circuit breaker y se deja de tomar trabajo nuevo.
+
 ## Alertas Slack
 
 La app puede enviar una alerta a Slack cuando detecta senales tecnicas:

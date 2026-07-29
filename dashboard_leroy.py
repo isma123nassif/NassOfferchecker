@@ -536,6 +536,8 @@ class LeroyChecker:
         nav_timeout: float = 18.0,
         retry_timeout: float = 35.0,
         block_assets: bool = True,
+        worker_count: int = 1,
+        circuit_breaker_threshold: int = 4,
     ):
         self.products = products
         self.expected_seller = expected_seller
@@ -543,7 +545,13 @@ class LeroyChecker:
         self.nav_timeout_ms = int(max(nav_timeout, 5.0) * 1000)
         self.retry_timeout_ms = int(max(retry_timeout, nav_timeout, 5.0) * 1000)
         self.block_assets = block_assets
+        self.worker_count = max(1, min(int(worker_count), 3))
+        self.circuit_breaker_threshold = max(1, int(circuit_breaker_threshold))
         self.stop_requested = False
+        self.circuit_open = False
+        self.completed_count = 0
+        self.challenge_streak = 0
+        self.result_lock = threading.Lock()
         self.run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
         self.summary_path = self.run_dir / "summary_live.csv"
         self.cache = OfferCache()
@@ -551,6 +559,161 @@ class LeroyChecker:
 
     def stop(self) -> None:
         self.stop_requested = True
+
+    def profile_dir_for_worker(self, worker_id: int) -> Path:
+        if worker_id <= 1:
+            return PROFILE_DIR
+        return FASE_DIR / f"browser_profile_leroy_worker_{worker_id}"
+
+    def launch_worker_context(self, p, worker_id: int, PlaywrightTimeoutError):
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir_for_worker(worker_id)),
+            headless=False,
+            viewport={"width": 1365, "height": 900},
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+            args=["--disable-blink-features=AutomationControlled", "--start-minimized"],
+        )
+        if self.block_assets:
+            install_lightweight_routes(context)
+        page = context.pages[0] if context.pages else context.new_page()
+        minimize_chromium_window(context, page)
+        page.set_default_timeout(self.retry_timeout_ms)
+        try:
+            page.goto(LEROY_HOME_URL, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
+        except PlaywrightTimeoutError:
+            pass
+        return context, page
+
+    def check_one_product(self, context, page, product: InputProduct, index: int, PlaywrightError) -> tuple[DashboardResult, object]:
+        item_started = time.monotonic()
+        url = LEROY_SEARCH_URL.format(ean=product.ean)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
+        except PlaywrightError:
+            try:
+                page.close()
+            except PlaywrightError:
+                pass
+            page = context.new_page()
+            minimize_chromium_window(context, page)
+            page.set_default_timeout(self.retry_timeout_ms)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=self.retry_timeout_ms)
+            except PlaywrightError as exc:
+                row = DashboardResult(
+                    ean=product.ean,
+                    reference=product.reference,
+                    feed_quantity=product.quantity,
+                    feed_price=product.price,
+                    light="yellow",
+                    status="INCIERTA",
+                    final_url=url,
+                    title="",
+                    sku="",
+                    seller_name="",
+                    marketplace_price="",
+                    product_availability="unknown",
+                    offer_available=False,
+                    buybox_ok="unknown",
+                    challenge_detected=False,
+                    reason=f"error de navegacion: {exc}",
+                    elapsed_seconds=round(time.monotonic() - item_started, 2),
+                    html_path="",
+                )
+                return row, page
+
+        content = page.content()
+        title = page.title()
+        final_url = page.url
+        light, status, availability, offer_available, buybox_ok, seller_name, marketplace_price, reason = classify_light(
+            product, content, title, final_url, self.expected_seller
+        )
+        html_path = ""
+        if light != "green":
+            html_file = self.run_dir / f"{index:04d}_{product.ean}.html"
+            html_file.write_text(content, encoding="utf-8")
+            html_path = str(html_file)
+
+        row = DashboardResult(
+            ean=product.ean,
+            reference=product.reference,
+            feed_quantity=product.quantity,
+            feed_price=product.price,
+            light=light,
+            status=status,
+            final_url=final_url,
+            title=title,
+            sku=extract_product_fields(content)["sku"],
+            seller_name=seller_name,
+            marketplace_price=marketplace_price,
+            product_availability=availability,
+            offer_available=offer_available,
+            buybox_ok=buybox_ok,
+            challenge_detected=challenge_detected(content, title, final_url),
+            reason=reason,
+            elapsed_seconds=round(time.monotonic() - item_started, 2),
+            html_path=html_path,
+        )
+        return row, page
+
+    def record_result(self, row: DashboardResult, index: int, total: int, events: queue.Queue) -> int:
+        with self.result_lock:
+            write_dashboard_row(self.summary_path, row)
+            self.cache.put(InputProduct(row.ean, row.reference, row.feed_quantity, row.feed_price), self.expected_seller, row)
+            if self.alerts.notify_if_needed(row, self.run_dir, index, total):
+                events.put(("alert_sent", row.ean, row.status))
+            if self.alerts.should_alert(row):
+                self.challenge_streak += 1
+            else:
+                self.challenge_streak = 0
+            if self.challenge_streak >= self.circuit_breaker_threshold and not self.circuit_open:
+                self.circuit_open = True
+                self.stop_requested = True
+                events.put(("circuit_breaker", row.ean, row.status, self.challenge_streak))
+            self.completed_count += 1
+            return self.completed_count
+
+    def browser_worker(
+        self,
+        worker_id: int,
+        work_queue: queue.Queue,
+        events: queue.Queue,
+        PlaywrightError,
+        PlaywrightTimeoutError,
+        sync_playwright,
+    ) -> None:
+        context = None
+        try:
+            with sync_playwright() as p:
+                context, page = self.launch_worker_context(p, worker_id, PlaywrightTimeoutError)
+                events.put(("worker_status", worker_id, "activo"))
+                total = len(self.products)
+                while not self.stop_requested:
+                    try:
+                        index, product = work_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    try:
+                        if self.stop_requested:
+                            break
+                        row, page = self.check_one_product(context, page, product, index, PlaywrightError)
+                        completed = self.record_result(row, index, total, events)
+                        events.put(("result", completed, total, row))
+                        if not self.stop_requested and completed < total:
+                            time.sleep(self.delay)
+                    finally:
+                        work_queue.task_done()
+        except Exception as exc:
+            self.stop_requested = True
+            events.put(("error", f"worker {worker_id}: {exc}"))
+        finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            events.put(("worker_status", worker_id, "cerrado"))
 
     def run(self, events: queue.Queue) -> None:
         started = time.monotonic()
@@ -564,116 +727,30 @@ class LeroyChecker:
 
         self.run_dir.mkdir(parents=True, exist_ok=True)
         events.put(("run_dir", str(self.run_dir)))
+        events.put(("phase3", self.worker_count, self.circuit_breaker_threshold))
 
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(PROFILE_DIR),
-                headless=False,
-                viewport={"width": 1365, "height": 900},
-                locale="es-ES",
-                timezone_id="Europe/Madrid",
-                args=["--disable-blink-features=AutomationControlled", "--start-minimized"],
+        work_queue: queue.Queue = queue.Queue()
+        for index, product in enumerate(self.products, start=1):
+            work_queue.put((index, product))
+
+        worker_threads = []
+        for worker_id in range(1, self.worker_count + 1):
+            thread = threading.Thread(
+                target=self.browser_worker,
+                args=(worker_id, work_queue, events, PlaywrightError, PlaywrightTimeoutError, sync_playwright),
+                daemon=True,
             )
-            if self.block_assets:
-                install_lightweight_routes(context)
-            page = context.pages[0] if context.pages else context.new_page()
-            minimize_chromium_window(context, page)
-            page.set_default_timeout(self.retry_timeout_ms)
-            try:
-                page.goto(LEROY_HOME_URL, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
-            except PlaywrightTimeoutError:
-                pass
+            worker_threads.append(thread)
+            thread.start()
 
-            for index, product in enumerate(self.products, start=1):
-                if self.stop_requested:
-                    break
-                item_started = time.monotonic()
-                url = LEROY_SEARCH_URL.format(ean=product.ean)
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
-                except PlaywrightError:
-                    try:
-                        page.close()
-                    except PlaywrightError:
-                        pass
-                    page = context.new_page()
-                    minimize_chromium_window(context, page)
-                    page.set_default_timeout(self.retry_timeout_ms)
-                    try:
-                        page.goto(url, wait_until="domcontentloaded", timeout=self.retry_timeout_ms)
-                    except PlaywrightError as exc:
-                        row = DashboardResult(
-                            ean=product.ean,
-                            reference=product.reference,
-                            feed_quantity=product.quantity,
-                            feed_price=product.price,
-                            light="yellow",
-                            status="INCIERTA",
-                            final_url=url,
-                            title="",
-                            sku="",
-                            seller_name="",
-                            marketplace_price="",
-                            product_availability="unknown",
-                            offer_available=False,
-                            buybox_ok="unknown",
-                            challenge_detected=False,
-                            reason=f"error de navegacion: {exc}",
-                            elapsed_seconds=round(time.monotonic() - item_started, 2),
-                            html_path="",
-                        )
-                        write_dashboard_row(self.summary_path, row)
-                        self.cache.put(product, self.expected_seller, row)
-                        if self.alerts.notify_if_needed(row, self.run_dir, index, len(self.products)):
-                            events.put(("alert_sent", row.ean, row.status))
-                        events.put(("result", index, len(self.products), row))
-                        time.sleep(self.delay)
-                        continue
-
-                content = page.content()
-                title = page.title()
-                final_url = page.url
-                light, status, availability, offer_available, buybox_ok, seller_name, marketplace_price, reason = classify_light(
-                    product, content, title, final_url, self.expected_seller
-                )
-                html_path = ""
-                if light != "green":
-                    html_file = self.run_dir / f"{index:04d}_{product.ean}.html"
-                    html_file.write_text(content, encoding="utf-8")
-                    html_path = str(html_file)
-
-                row = DashboardResult(
-                    ean=product.ean,
-                    reference=product.reference,
-                    feed_quantity=product.quantity,
-                    feed_price=product.price,
-                    light=light,
-                    status=status,
-                    final_url=final_url,
-                    title=title,
-                    sku=extract_product_fields(content)["sku"],
-                    seller_name=seller_name,
-                    marketplace_price=marketplace_price,
-                    product_availability=availability,
-                    offer_available=offer_available,
-                    buybox_ok=buybox_ok,
-                    challenge_detected=challenge_detected(content, title, final_url),
-                    reason=reason,
-                    elapsed_seconds=round(time.monotonic() - item_started, 2),
-                    html_path=html_path,
-                )
-                write_dashboard_row(self.summary_path, row)
-                self.cache.put(product, self.expected_seller, row)
-                if self.alerts.notify_if_needed(row, self.run_dir, index, len(self.products)):
-                    events.put(("alert_sent", row.ean, row.status))
-                events.put(("result", index, len(self.products), row))
-                if index < len(self.products):
-                    time.sleep(self.delay)
-
-            context.close()
+        for thread in worker_threads:
+            thread.join()
 
         elapsed = round(time.monotonic() - started, 1)
-        events.put(("done", elapsed, str(self.summary_path)))
+        summary = str(self.summary_path)
+        if self.circuit_open:
+            summary = f"{summary} - corte tecnico activo"
+        events.put(("done", elapsed, summary))
 
 
 class MarketplaceDialog(tk.Toplevel):

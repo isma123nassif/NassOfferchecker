@@ -288,8 +288,16 @@ class ModernDashboard(ctk.CTk):
         ctk.CTkLabel(progress_panel, textvariable=self.progress_text, font=("Segoe UI", 13), text_color=TEXT).grid(
             row=0, column=0, sticky="w", padx=18, pady=(14, 4)
         )
+        phase3_controls = ctk.CTkFrame(progress_panel, fg_color="transparent")
+        phase3_controls.grid(row=0, column=1, sticky="e", padx=18, pady=(10, 0))
+        ctk.CTkLabel(phase3_controls, text="Workers", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
+        self.worker_count_var = ctk.StringVar(value="1")
+        ctk.CTkEntry(phase3_controls, textvariable=self.worker_count_var, width=48, height=28).pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(phase3_controls, text="Corte tecnico", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
+        self.circuit_threshold_var = ctk.StringVar(value="4")
+        ctk.CTkEntry(phase3_controls, textvariable=self.circuit_threshold_var, width=48, height=28).pack(side="left")
         self.progress = ctk.CTkProgressBar(progress_panel, height=8, progress_color=LEROY)
-        self.progress.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 14))
+        self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
         self.progress.set(0)
 
         table_panel = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
@@ -398,7 +406,7 @@ class ModernDashboard(ctk.CTk):
             return env_url
         if LOCAL_SETTINGS_PATH.exists():
             try:
-                data = json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+                data = json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8-sig"))
             except (OSError, json.JSONDecodeError):
                 return ""
             return str(data.get("shoppingfeed_url", "") or "").strip()
@@ -591,6 +599,18 @@ class ModernDashboard(ctk.CTk):
             nav_timeout = float(self.nav_timeout_var.get().replace(",", "."))
         except ValueError:
             nav_timeout = 18.0
+        try:
+            worker_count = int(float(self.worker_count_var.get().replace(",", ".")))
+        except ValueError:
+            worker_count = 1
+        worker_count = max(1, min(worker_count, 3))
+        self.worker_count_var.set(str(worker_count))
+        try:
+            circuit_threshold = int(float(self.circuit_threshold_var.get().replace(",", ".")))
+        except ValueError:
+            circuit_threshold = 4
+        circuit_threshold = max(1, min(circuit_threshold, 10))
+        self.circuit_threshold_var.set(str(circuit_threshold))
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.tree.delete(*self.tree.get_children())
@@ -634,6 +654,8 @@ class ModernDashboard(ctk.CTk):
             nav_timeout=nav_timeout,
             retry_timeout=max(nav_timeout * 2, 30.0),
             block_assets=self.block_assets_var.get(),
+            worker_count=worker_count,
+            circuit_breaker_threshold=circuit_threshold,
         )
         self.worker = threading.Thread(target=self.checker.run, args=(self.events,), daemon=True)
         self.worker.start()
@@ -696,6 +718,12 @@ class ModernDashboard(ctk.CTk):
                     self.progress_text.set(f"Terminado en {elapsed}s - {summary} - saltados {skipped}")
                 elif kind == "run_dir":
                     self.subtitle_var.set(f"Salida: {event[1]}")
+                elif kind == "phase3":
+                    self.progress_text.set(f"Fase 3 activa: {event[1]} worker(s), corte tecnico {event[2]}")
+                elif kind == "worker_status":
+                    self.subtitle_var.set(f"Worker {event[1]} {event[2]}")
+                elif kind == "circuit_breaker":
+                    self.progress_text.set(f"Corte tecnico activado tras {event[3]} senales: EAN {event[1]}")
                 elif kind == "error":
                     messagebox.showerror("Error", event[1])
                 elif kind == "alert_sent":

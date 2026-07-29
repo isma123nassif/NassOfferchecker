@@ -13,6 +13,7 @@ local_settings.json
 
 # Browser profiles and session state can contain cookies, storage and fingerprints.
 fase1/browser_profile_leroy/
+fase1/browser_profile_leroy_worker_*/
 fase1/**/storage_state*.json
 fase1/**/cookies*.json
 
