@@ -4,7 +4,7 @@ Fecha de corte: 2026-07-29.
 
 ## Objetivo
 
-Construir una app Windows visual para comprobar si las ofertas de Leroy Merlin siguen vivas, usando EANs del catalogo Shoppingfeed o entradas manuales.
+Construir una app Windows visual para comprobar si las ofertas de marketplaces siguen vivas, usando EANs de catalogos Shoppingfeed o entradas manuales.
 
 La decision comercial se basa en:
 
@@ -66,10 +66,12 @@ local_settings.example.json
 
 - Dashboard moderno en `dashboard_leroy_modern.py`.
 - Logica de scraping y clasificacion en `dashboard_leroy.py`.
+- Configuracion multi-marketplace en `marketplaces.py`.
+- Selector inicial `Leroy Merlin` / `Carrefour` / `Worten`.
 - Entrada manual por EAN.
 - CSV manual.
-- Catalogo vivo desde Shoppingfeed.
-- Cache diferencial SQLite en `fase1/offer_cache.sqlite`.
+- Catalogo vivo desde Shoppingfeed por marketplace.
+- Cache diferencial SQLite separada por marketplace.
 - Saltar productos con stock feed `<= 0`.
 - Semaforos:
   - verde: correcto;
@@ -77,6 +79,11 @@ local_settings.example.json
   - rojo: fuera, sin stock o no vendido;
   - gris: tecnico/challenge/timeout/incierto.
 - Tarjetas de semaforo clicables para filtrar resultados.
+- Tabla con columna `Producto` para titulo/modelo extraido del marketplace.
+- Subfiltros rojos:
+  - `NO_VIVA` / fuera marketplace;
+  - `SIN_STOCK_FEED` / sin stock en feed.
+- Reintentos por semaforo conservan la tabla y recalculan solo las filas seleccionadas, sin resetear todos los contadores.
 - Boton y `Ctrl+C` para copiar EAN seleccionado.
 - Chromium minimizado.
 - Modo datos minimos para reducir carga de assets.
@@ -88,38 +95,62 @@ local_settings.example.json
   - `enabled`;
   - proxy configurado si/no;
   - User-Agent propio si/no.
+- Resumen agregado de workers en UI.
+- Warm-up por worker antes de consumir productos:
+  - estado `calentando`;
+  - estado `activo` si la home esta sana;
+  - estado `bloqueado` si aparece challenge;
+  - worker bloqueado no toma productos de la cola.
+- Base Carrefour:
+  - feed Shoppingfeed propio;
+  - cache propia;
+  - perfil Edge manual/CDP por worker propio;
+  - busqueda batch de hasta 7 EAN por URL `https://www.carrefour.es/?query=EAN1%20EAN2`;
+  - navegador Carrefour con mas carga permitida que Leroy: sin rutas ligeras agresivas y con espera extra de carga;
+  - extraccion desde busqueda de EAN, precio, seller, URL de ficha y boton de compra;
+  - verde si seller esperado coincide y hay boton de compra;
+  - amarillo si seller no coincide, seller no se extrae o falta boton de compra.
+- Base Worten:
+  - feed Shoppingfeed propio;
+  - cache propia;
+  - perfil Edge manual/CDP por worker propio;
+  - `WortenChecker` separado;
+  - dominio `https://www.worten.pt/`;
+  - seller dedicado `Mark JV shop`, equivalente operativo de `NEWLUX GROUP`;
+  - seller_id `e5dae97c-401c-456a-be59-56a4f73b0bb5`;
+  - busqueda batch abriendo la pagina del seller solo en warm-up, esperando fichas y encadenando tandas de 10 EANs desde el buscador actual, sin volver al seller entre tandas salvo recuperacion si se pierde el input;
+  - extraccion desde tarjetas visibles: `EAN`, titulo, precio, seller y URL; los agrupados de Worten pueden generar varios nodos internos y se conserva esa evidencia;
+  - perfil Edge manual/CDP limpio por worker en `fase1/edge_manual_worten_clean_worker_<n>`, sin extensiones ni cuenta;
+  - si aparece challenge anti-bot, Edge manual/CDP queda visible, la UI marca `pendiente challenge`, espera resolucion manual y despues intenta aceptar el popup de cookies antes de seguir;
+  - el estado de cookies queda cacheado por worker para no repetir el cierre pesado en cada tanda.
 
-## Punto exacto pendiente
+## Ultimo avance
 
-El texto superior que puede decir `Worker 1 activo` es solo el ultimo evento recibido por la UI, no un resumen global.
+Se archivo la logica compleja de Worten en `archive/dashboard_leroy_worten_legacy_20260730.py` y se reactivo Worten con el flujo simple validado: seller page solo como warm-up/recuperacion, busquedas encadenadas por input en tandas de 10 EAN y extraccion desde tarjetas visibles. La UI ahora separa rojos por `NO_VIVA` y `SIN_STOCK_FEED`, muestra columna `Producto` y mantiene contadores al reintentar filtros.
 
-El estado real esta en los chips inferiores de workers, por ejemplo:
+Anteriormente se corrigio la confusion visual del texto `Worker 1 activo`, se anadio warm-up por worker y se sento la base Carrefour.
+
+Ahora la UI mantiene el subtitulo superior para salida/catalogo y muestra un resumen agregado de workers junto a los chips:
 
 ```text
+2/10 workers activos | Proxy 0/10 | UA 0/10
 W1 activo | P:no | UA:def
 W2 activo | P:no | UA:def
 ```
-
-Pendiente recomendado:
-
-- Cambiar ese subtitulo por un resumen agregado, por ejemplo `2 workers activos`.
-- Mantener `Salida: ...` separado del estado de workers.
 
 ## Fase 3 siguiente
 
 Orden recomendado:
 
-1. Corregir UI de resumen de workers.
-2. Warm-up por worker:
-   - abrir home;
-   - comprobar challenge;
-   - marcar worker como sano o bloqueado;
-   - solo workers sanos consumen cola.
-3. Pausa individual:
+1. Pausa individual durante analisis:
    - si un worker recibe captcha/DataDome/challenge, pausarlo sin cerrar todos inmediatamente.
-4. Corte global:
+2. Corte global mas fino:
    - si varios workers fallan o hay racha tecnica, parar lote.
-5. Aplicar proxy/User-Agent por worker en Playwright:
+3. Completar precision Carrefour:
+   - detectar senales explicitas de sin resultados para reducir grises;
+   - detectar disponibilidad sin boton si Carrefour cambia UI;
+   - comparar precio Carrefour contra precio feed si se decide usar margen/tolerancia.
+4. Aplicar proxy/User-Agent por worker en Playwright:
    - usar solo proxies estables/autorizados;
    - User-Agent persistente por worker;
    - no rotar por request.
@@ -161,4 +192,3 @@ Comprobar que no aparecen:
 - perfiles Chromium;
 - CSVs completos del feed;
 - outputs de ejecucion.
-

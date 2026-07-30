@@ -14,6 +14,11 @@ local_settings.json
 # Browser profiles and session state can contain cookies, storage and fingerprints.
 fase1/browser_profile_leroy/
 fase1/browser_profile_leroy_worker_*/
+fase1/browser_profile_carrefour_worker_*/
+fase1/browser_profile_worten_worker_*/
+fase1/edge_manual_worten_worker_*/
+fase1/edge_manual_worten_clean_worker*/
+fase1/edge_manual_worten_probe/
 fase1/**/storage_state*.json
 fase1/**/cookies*.json
 
@@ -28,6 +33,7 @@ fase1/**/*.png
 fase1/**/*.jpg
 fase1/**/*.jpeg
 fase1/**/*.webp
+fase1/worten_probe/
 
 # Shoppingfeed exports and run-sized result files.
 fase1/shoppingfeed_*.csv

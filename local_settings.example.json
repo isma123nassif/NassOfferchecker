@@ -1,5 +1,26 @@
 {
   "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_TOKEN",
+  "carrefour_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
+  "worten_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
+  "marketplaces": {
+    "leroy": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_LEROY_TOKEN"
+    },
+    "carrefour": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
+      "search_batch_size": 7
+    },
+    "worten": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
+      "seller_id": "e5dae97c-401c-456a-be59-56a4f73b0bb5",
+      "seller_name": "Mark JV shop",
+      "search_batch_size": 10,
+      "manual_cdp": true,
+      "manual_cdp_port_base": 9330,
+      "browser_channel": "msedge",
+      "challenge_timeout_seconds": 600
+    }
+  },
   "slack_webhook_url": "https://hooks.slack.com/services/PRIVATE/WEBHOOK/URL",
   "alerts_enabled": true,
   "alert_cooldown_minutes": 15,

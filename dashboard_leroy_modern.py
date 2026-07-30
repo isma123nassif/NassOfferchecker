@@ -1,5 +1,3 @@
-import json
-import os
 import queue
 import shutil
 import threading
@@ -14,17 +12,22 @@ import customtkinter as ctk
 from dashboard_leroy import (
     DashboardResult,
     InputProduct,
-    LeroyChecker,
     OfferCache,
     PROFILE_DIR,
+    create_checker,
     parse_quantity,
     read_products_csv,
 )
+from marketplaces import (
+    MARKETPLACE_LABELS,
+    build_marketplace_search_url,
+    get_feed_cache_path,
+    get_marketplace_config,
+    get_marketplace_feed_url,
+    get_offer_cache_path,
+    marketplace_key_from_label,
+)
 
-
-BASE_DIR = Path(__file__).resolve().parent
-LOCAL_SETTINGS_PATH = BASE_DIR / "local_settings.json"
-SHOPPINGFEED_CACHE_PATH = BASE_DIR / "fase1" / "shoppingfeed_latest.csv"
 
 APP_BG = "#F7F8FA"
 PANEL = "#FFFFFF"
@@ -51,7 +54,7 @@ class MarketplaceDialog(ctk.CTkToplevel):
         self.title("Marketplace")
         self.geometry("420x230")
         self.resizable(False, False)
-        self.result = "Leroy Merlin"
+        self.result = MARKETPLACE_LABELS[0]
         self.configure(fg_color=APP_BG)
         self.transient(master)
         self.grab_set()
@@ -64,8 +67,8 @@ class MarketplaceDialog(ctk.CTkToplevel):
         ctk.CTkLabel(box, text="Selecciona donde quieres revisar disponibilidad.", text_color=MUTED).pack(
             anchor="w", padx=22
         )
-        self.combo = ctk.CTkComboBox(box, values=["Leroy Merlin"], state="readonly", height=38)
-        self.combo.set("Leroy Merlin")
+        self.combo = ctk.CTkComboBox(box, values=MARKETPLACE_LABELS, state="readonly", height=38)
+        self.combo.set(self.result)
         self.combo.pack(fill="x", padx=22, pady=(20, 18))
         ctk.CTkButton(box, text="Continuar", fg_color=LEROY, hover_color="#006332", command=self.accept).pack(
             anchor="e", padx=22
@@ -79,10 +82,11 @@ class MarketplaceDialog(ctk.CTkToplevel):
 
 
 class MetricCard(ctk.CTkFrame):
-    def __init__(self, master, label: str, color: str, command=None):
+    def __init__(self, master, label: str, color: str, command=None, retry_command=None):
         super().__init__(master, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         self.color = color
         self.command = command
+        self.retry_command = retry_command
         self.indicator = ctk.CTkFrame(self, width=5, fg_color=color, corner_radius=5)
         self.indicator.pack(side="left", fill="y", padx=(0, 12))
         content = ctk.CTkFrame(self, fg_color="transparent")
@@ -93,6 +97,19 @@ class MetricCard(ctk.CTkFrame):
         self.label.pack(anchor="w")
         self.filter_hint = ctk.CTkLabel(content, text="Click para filtrar", font=("Segoe UI", 10), text_color="#98A2B3")
         self.filter_hint.pack(anchor="w", pady=(10, 0))
+        self.retry_button = ctk.CTkButton(
+            content,
+            text="Reintentar",
+            height=24,
+            width=92,
+            fg_color="#FFFFFF",
+            text_color=TEXT,
+            hover_color="#F3F4F6",
+            border_width=1,
+            border_color=BORDER,
+            command=self._retry_clicked,
+        )
+        self.retry_button.pack(anchor="w", pady=(8, 0))
         for widget in (self, self.indicator, content, self.value, self.label, self.filter_hint):
             widget.bind("<Button-1>", self._clicked)
 
@@ -107,38 +124,47 @@ class MetricCard(ctk.CTkFrame):
         if self.command:
             self.command()
 
+    def _retry_clicked(self):
+        if self.retry_command:
+            self.retry_command()
+
 
 class ModernDashboard(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("green")
-        self.title("Leroy Offer Watcher")
+        self.title("Nass Offer Checker")
         self.geometry("1360x820")
         self.minsize(1180, 720)
         self.configure(fg_color=APP_BG)
 
         self.events: queue.Queue = queue.Queue()
         self.products: list[InputProduct] = []
-        self.checker: LeroyChecker | None = None
+        self.checker = None
         self.worker: threading.Thread | None = None
         self.catalog_worker: threading.Thread | None = None
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.row_urls: dict[str, str] = {}
         self.row_items: dict[str, str] = {}
         self.row_lights: dict[str, str] = {}
+        self.row_statuses: dict[str, str] = {}
         self.row_order: list[str] = []
         self.active_filter: str | None = None
+        self.active_status_filter: str | None = None
+        self.force_live_once = False
+        self.retrying_light: str | None = None
         self.worker_chips: dict[int, ctk.CTkLabel] = {}
         self.worker_meta: dict[int, dict[str, object]] = {}
         self.cached_count = 0
         self.direct_count = 0
         self.live_total = 0
-        self.shoppingfeed_url = self.load_shoppingfeed_url()
-
         dialog = MarketplaceDialog(self)
         self.wait_window(dialog)
         self.marketplace = dialog.result
+        self.marketplace_key = marketplace_key_from_label(self.marketplace)
+        self.marketplace_config = get_marketplace_config(self.marketplace_key)
+        self.shoppingfeed_url = self.load_marketplace_feed_url()
 
         self.build_ui()
         self.after(200, self.process_events)
@@ -155,14 +181,26 @@ class ModernDashboard(ctk.CTk):
         logo.pack(fill="x", padx=22, pady=(28, 22))
         badge = ctk.CTkFrame(logo, fg_color=LEROY, corner_radius=12, height=72)
         badge.pack(fill="x")
-        ctk.CTkLabel(badge, text="LEROY\nMERLIN", text_color="white", font=("Segoe UI", 20, "bold")).pack(
+        self.brand_label = ctk.CTkLabel(
+            badge,
+            text="\n".join(self.marketplace_config.brand_lines),
+            text_color="white",
+            font=("Segoe UI", 20, "bold"),
+        )
+        self.brand_label.pack(
             expand=True
         )
 
         ctk.CTkLabel(sidebar, text="Marketplace", text_color="#B7D7C3", font=("Segoe UI", 12, "bold")).pack(
             anchor="w", padx=24, pady=(8, 6)
         )
-        self.marketplace_box = ctk.CTkComboBox(sidebar, values=["Leroy Merlin"], state="readonly", height=38)
+        self.marketplace_box = ctk.CTkComboBox(
+            sidebar,
+            values=MARKETPLACE_LABELS,
+            state="readonly",
+            height=38,
+            command=self.change_marketplace,
+        )
         self.marketplace_box.set(self.marketplace)
         self.marketplace_box.pack(fill="x", padx=22)
 
@@ -279,10 +317,34 @@ class ModernDashboard(ctk.CTk):
         for i in range(4):
             metrics.grid_columnconfigure(i, weight=1)
         self.cards = {
-            "green": MetricCard(metrics, "Correctos", GREEN, command=lambda: self.set_filter("green")),
-            "yellow": MetricCard(metrics, "Revisar", YELLOW, command=lambda: self.set_filter("yellow")),
-            "red": MetricCard(metrics, "Fuera", RED, command=lambda: self.set_filter("red")),
-            "gray": MetricCard(metrics, "Tecnico", GRAY, command=lambda: self.set_filter("gray")),
+            "green": MetricCard(
+                metrics,
+                "Correctos",
+                GREEN,
+                command=lambda: self.set_filter("green"),
+                retry_command=lambda: self.retry_light("green"),
+            ),
+            "yellow": MetricCard(
+                metrics,
+                "Revisar",
+                YELLOW,
+                command=lambda: self.set_filter("yellow"),
+                retry_command=lambda: self.retry_light("yellow"),
+            ),
+            "red": MetricCard(
+                metrics,
+                "Fuera",
+                RED,
+                command=lambda: self.set_filter("red"),
+                retry_command=lambda: self.retry_light("red"),
+            ),
+            "gray": MetricCard(
+                metrics,
+                "Tecnico",
+                GRAY,
+                command=lambda: self.set_filter("gray"),
+                retry_command=lambda: self.retry_light("gray"),
+            ),
         }
         for i, key in enumerate(("green", "yellow", "red", "gray")):
             self.cards[key].grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
@@ -297,7 +359,7 @@ class ModernDashboard(ctk.CTk):
         phase3_controls = ctk.CTkFrame(progress_panel, fg_color="transparent")
         phase3_controls.grid(row=0, column=1, sticky="e", padx=18, pady=(10, 0))
         ctk.CTkLabel(phase3_controls, text="Workers", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
-        self.worker_count_var = ctk.StringVar(value="10")
+        self.worker_count_var = ctk.StringVar(value="1")
         ctk.CTkEntry(phase3_controls, textvariable=self.worker_count_var, width=48, height=28).pack(side="left", padx=(0, 12))
         ctk.CTkLabel(phase3_controls, text="Corte tecnico", text_color=MUTED, font=("Segoe UI", 11)).pack(side="left", padx=(0, 6))
         self.circuit_threshold_var = ctk.StringVar(value="4")
@@ -305,11 +367,18 @@ class ModernDashboard(ctk.CTk):
         self.progress = ctk.CTkProgressBar(progress_panel, height=8, progress_color=LEROY)
         self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
         self.progress.set(0)
+        self.worker_summary_var = ctk.StringVar(value="Workers sin iniciar")
+        ctk.CTkLabel(
+            progress_panel,
+            textvariable=self.worker_summary_var,
+            font=("Segoe UI", 11),
+            text_color=MUTED,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 6))
         self.worker_status_panel = ctk.CTkFrame(progress_panel, fg_color="transparent")
-        self.worker_status_panel.grid(row=2, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        self.worker_status_panel.grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
         for col in range(5):
             self.worker_status_panel.grid_columnconfigure(col, weight=1)
-        self.reset_worker_chips(10)
+        self.reset_worker_chips(1)
 
         table_panel = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
         table_panel.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 24))
@@ -323,6 +392,38 @@ class ModernDashboard(ctk.CTk):
         ctk.CTkLabel(table_toolbar, textvariable=self.results_title_var, font=("Segoe UI", 13, "bold"), text_color=TEXT).grid(
             row=0, column=0, sticky="w"
         )
+        self.subfilter_frame = ctk.CTkFrame(table_toolbar, fg_color="transparent")
+        self.subfilter_frame.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        self.subfilter_buttons = {
+            "NO_VIVA": ctk.CTkButton(
+                self.subfilter_frame,
+                text="Fuera marketplace",
+                width=136,
+                height=30,
+                fg_color="#FFFFFF",
+                text_color=TEXT,
+                hover_color="#F3F4F6",
+                border_width=1,
+                border_color=BORDER,
+                command=lambda: self.set_status_filter("NO_VIVA"),
+            ),
+            "SIN_STOCK_FEED": ctk.CTkButton(
+                self.subfilter_frame,
+                text="Sin stock feed",
+                width=118,
+                height=30,
+                fg_color="#FFFFFF",
+                text_color=TEXT,
+                hover_color="#F3F4F6",
+                border_width=1,
+                border_color=BORDER,
+                command=lambda: self.set_status_filter("SIN_STOCK_FEED"),
+            ),
+        }
+        self.subfilter_buttons["NO_VIVA"].pack(side="left", padx=(0, 6))
+        self.subfilter_buttons["SIN_STOCK_FEED"].pack(side="left")
+        self.subfilter_buttons["NO_VIVA"].pack_forget()
+        self.subfilter_buttons["SIN_STOCK_FEED"].pack_forget()
         ctk.CTkButton(
             table_toolbar,
             text="Todos",
@@ -333,8 +434,8 @@ class ModernDashboard(ctk.CTk):
             hover_color="#F3F4F6",
             border_width=1,
             border_color=BORDER,
-            command=lambda: self.set_filter(None),
-        ).grid(row=0, column=1, sticky="e", padx=(0, 8))
+            command=self.clear_filters,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8))
         ctk.CTkButton(
             table_toolbar,
             text="Copiar EAN",
@@ -346,32 +447,34 @@ class ModernDashboard(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             command=self.copy_selected_ean,
-        ).grid(row=0, column=2, sticky="e")
+        ).grid(row=0, column=3, sticky="e")
 
         self.setup_tree_style()
-        columns = ("light", "ean", "reference", "stock", "feed_price", "status", "seller", "market_price", "reason")
+        columns = ("light", "ean", "reference", "product", "stock", "feed_price", "status", "seller", "market_price", "reason")
         self.tree = ttk.Treeview(table_panel, columns=columns, show="headings", selectmode="browse")
         headings = {
             "light": "",
             "ean": "EAN",
             "reference": "SKU/ref",
+            "product": "Producto",
             "stock": "Stock",
             "feed_price": "Feed",
             "status": "Estado",
             "seller": "Seller",
-            "market_price": "Leroy",
+            "market_price": "Market",
             "reason": "Motivo",
         }
         widths = {
             "light": 58,
             "ean": 128,
             "reference": 120,
+            "product": 260,
             "stock": 76,
             "feed_price": 82,
-            "status": 170,
-            "seller": 170,
+            "status": 150,
+            "seller": 140,
             "market_price": 82,
-            "reason": 420,
+            "reason": 320,
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
@@ -408,20 +511,21 @@ class ModernDashboard(ctk.CTk):
         )
         style.map("Treeview", background=[("selected", "#E7F3EC")], foreground=[("selected", TEXT)])
 
-    def load_shoppingfeed_url(self) -> str:
-        env_url = (
-            os.environ.get("SHOPPINGFEED_CATALOG_URL", "").strip()
-            or os.environ.get("SHOPPINGFEED_URL", "").strip()
-        )
-        if env_url:
-            return env_url
-        if LOCAL_SETTINGS_PATH.exists():
-            try:
-                data = json.loads(LOCAL_SETTINGS_PATH.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
-                return ""
-            return str(data.get("shoppingfeed_url", "") or "").strip()
-        return ""
+    def load_marketplace_feed_url(self) -> str:
+        return get_marketplace_feed_url(self.marketplace_key)
+
+    def change_marketplace(self, label: str):
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning("En ejecucion", "Para el analisis antes de cambiar marketplace.")
+            self.marketplace_box.set(self.marketplace)
+            return
+        self.marketplace = label
+        self.marketplace_key = marketplace_key_from_label(label)
+        self.marketplace_config = get_marketplace_config(self.marketplace_key)
+        self.shoppingfeed_url = self.load_marketplace_feed_url()
+        self.brand_label.configure(text="\n".join(self.marketplace_config.brand_lines))
+        self.clear_list()
+        self.subtitle_var.set(f"Marketplace activo: {self.marketplace}")
 
     def add_single_ean(self):
         ean = self.ean_var.get().strip()
@@ -441,17 +545,17 @@ class ModernDashboard(ctk.CTk):
         if not self.shoppingfeed_url:
             messagebox.showerror(
                 "Shoppingfeed no configurado",
-                "Configura SHOPPINGFEED_URL o local_settings.json con shoppingfeed_url.",
+                f"Configura el feed de {self.marketplace} en local_settings.json o variable de entorno.",
             )
             return
         self.progress.set(0)
-        self.progress_text.set("Descargando catalogo vivo de Shoppingfeed...")
+        self.progress_text.set(f"Descargando catalogo vivo de {self.marketplace}...")
         self.catalog_worker = threading.Thread(target=self.download_live_catalog, daemon=True)
         self.catalog_worker.start()
 
     def download_live_catalog(self):
         try:
-            self.events.put(("catalog_progress", "Descargando catalogo vivo de Shoppingfeed..."))
+            self.events.put(("catalog_progress", f"Descargando catalogo vivo de {self.marketplace}..."))
             request = urllib.request.Request(
                 self.shoppingfeed_url,
                 headers={
@@ -466,12 +570,13 @@ class ModernDashboard(ctk.CTk):
             if not lines or "ean" not in lines[0].casefold():
                 raise ValueError("El feed no parece tener cabecera EAN.")
             self.events.put(("catalog_progress", "Catalogo descargado. Leyendo CSV..."))
-            SHOPPINGFEED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            SHOPPINGFEED_CACHE_PATH.write_text(text, encoding="utf-8")
-            products = read_products_csv(SHOPPINGFEED_CACHE_PATH)
+            cache_path = get_feed_cache_path(self.marketplace_key)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(text, encoding="utf-8")
+            products = read_products_csv(cache_path)
             if not products:
                 raise ValueError("No se encontraron EANs en el feed.")
-            self.events.put(("catalog_loaded", products, str(SHOPPINGFEED_CACHE_PATH)))
+            self.events.put(("catalog_loaded", products, str(cache_path)))
         except (OSError, urllib.error.URLError, ValueError) as exc:
             self.events.put(("catalog_error", str(exc)))
 
@@ -479,10 +584,11 @@ class ModernDashboard(ctk.CTk):
         item = self.tree.insert(
             "",
             "end",
-            values=("", product.ean, product.reference, product.quantity, product.price, "Pendiente", "", "", ""),
+            values=("", product.ean, product.reference, "", product.quantity, product.price, "Pendiente", "", "", ""),
         )
         self.row_items[product.ean] = item
         self.row_lights[item] = "pending"
+        self.row_statuses[item] = "PENDIENTE"
         self.row_order.append(item)
         if self.active_filter is not None:
             self.tree.detach(item)
@@ -496,7 +602,7 @@ class ModernDashboard(ctk.CTk):
             feed_price=product.price,
             light="red",
             status="SIN_STOCK_FEED",
-            final_url=f"https://www.leroymerlin.es/search?q={product.ean}",
+            final_url=build_marketplace_search_url(self.marketplace_key, [product.ean]),
             title="",
             sku="",
             seller_name="",
@@ -505,7 +611,7 @@ class ModernDashboard(ctk.CTk):
             offer_available=False,
             buybox_ok="unknown",
             challenge_detected=False,
-            reason="stock feed <= 0; no se abre Leroy",
+            reason=f"stock feed <= 0; no se abre {self.marketplace}",
             elapsed_seconds=0.0,
             html_path="",
         )
@@ -516,6 +622,9 @@ class ModernDashboard(ctk.CTk):
             item = self.tree.insert("", "end")
             self.row_items[row.ean] = item
             self.row_order.append(item)
+        previous_light = self.row_lights.get(item)
+        if previous_light in self.counts:
+            self.counts[previous_light] = max(0, self.counts[previous_light] - 1)
         code, _label, _color = LIGHT_META.get(row.light, LIGHT_META["gray"])
         self.tree.item(
             item,
@@ -523,6 +632,7 @@ class ModernDashboard(ctk.CTk):
                 code,
                 row.ean,
                 row.reference,
+                row.title,
                 row.feed_quantity,
                 row.feed_price,
                 self.business_status(row.status),
@@ -534,12 +644,13 @@ class ModernDashboard(ctk.CTk):
         )
         self.row_urls[item] = row.final_url
         self.row_lights[item] = row.light
+        self.row_statuses[item] = row.status
         if row.light in self.counts:
             self.counts[row.light] += 1
             self.update_cards()
-        if self.active_filter is not None and row.light != self.active_filter:
+        if not self.item_matches_filters(item):
             self.tree.detach(item)
-        elif self.active_filter is not None:
+        elif self.active_filter is not None or self.active_status_filter is not None:
             self.tree.reattach(item, "", "end")
 
     def load_bulk(self):
@@ -558,8 +669,10 @@ class ModernDashboard(ctk.CTk):
         self.row_urls.clear()
         self.row_items.clear()
         self.row_lights.clear()
+        self.row_statuses.clear()
         self.row_order.clear()
         self.active_filter = None
+        self.active_status_filter = None
         for product in self.products:
             self.add_pending_row(product)
         self.update_cards()
@@ -575,8 +688,10 @@ class ModernDashboard(ctk.CTk):
         self.row_urls.clear()
         self.row_items.clear()
         self.row_lights.clear()
+        self.row_statuses.clear()
         self.row_order.clear()
         self.active_filter = None
+        self.active_status_filter = None
         self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
         self.update_cards()
         self.progress.set(0)
@@ -590,6 +705,44 @@ class ModernDashboard(ctk.CTk):
             shutil.rmtree(PROFILE_DIR)
         self.progress_text.set("Perfil dedicado limpiado")
 
+    def product_from_item(self, item: str) -> InputProduct | None:
+        values = self.tree.item(item, "values")
+        if len(values) < 5:
+            return None
+        ean = str(values[1]).strip()
+        if not ean:
+            return None
+        return InputProduct(
+            ean=ean,
+            reference=str(values[2]).strip(),
+            quantity=str(values[4]).strip(),
+            price=str(values[5]).strip(),
+        )
+
+    def retry_light(self, light: str):
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning("En ejecucion", "Para el analisis antes de reintentar.")
+            return
+        products: list[InputProduct] = []
+        seen: set[str] = set()
+        for item in self.row_order:
+            if self.row_lights.get(item) != light:
+                continue
+            product = self.product_from_item(item)
+            if product and product.ean not in seen:
+                products.append(product)
+                seen.add(product.ean)
+        if not products:
+            _code, label, _color = LIGHT_META.get(light, LIGHT_META["gray"])
+            self.progress_text.set(f"No hay EAN para reintentar en {label}")
+            return
+        self.products = products
+        self.force_live_once = True
+        self.retrying_light = light
+        _code, label, _color = LIGHT_META.get(light, LIGHT_META["gray"])
+        self.progress_text.set(f"Reintentando {len(products)} EAN de {label}")
+        self.start_analysis()
+
     def start_analysis(self):
         if not self.products:
             self.add_single_ean()
@@ -597,7 +750,9 @@ class ModernDashboard(ctk.CTk):
             messagebox.showwarning("Sin productos", "Agrega un EAN o carga un CSV.")
             return
         if self.worker and self.worker.is_alive():
+            self.progress_text.set("Ya hay un analisis activo; pulsa Parar antes de lanzar otro.")
             return
+        self.events = queue.Queue()
         try:
             delay = float(self.delay_var.get().replace(",", "."))
         except ValueError:
@@ -619,7 +774,7 @@ class ModernDashboard(ctk.CTk):
         try:
             worker_count = int(float(self.worker_count_var.get().replace(",", ".")))
         except ValueError:
-            worker_count = 10
+            worker_count = 1
         worker_count = max(1, min(worker_count, 10))
         self.worker_count_var.set(str(worker_count))
         self.reset_worker_chips(worker_count)
@@ -629,18 +784,43 @@ class ModernDashboard(ctk.CTk):
             circuit_threshold = 4
         circuit_threshold = max(1, min(circuit_threshold, 10))
         self.circuit_threshold_var.set(str(circuit_threshold))
-        self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
-        self.update_cards()
-        self.tree.delete(*self.tree.get_children())
-        self.row_urls.clear()
-        self.row_items.clear()
-        self.row_lights.clear()
-        self.row_order.clear()
+        retrying_light = self.retrying_light
+        self.retrying_light = None
+        if retrying_light:
+            for product in self.products:
+                item = self.row_items.get(product.ean)
+                if not item:
+                    continue
+                old_light = self.row_lights.get(item)
+                if old_light in self.counts:
+                    self.counts[old_light] = max(0, self.counts[old_light] - 1)
+                self.tree.item(
+                    item,
+                    values=("", product.ean, product.reference, "", product.quantity, product.price, "Pendiente", "", "", ""),
+                    tags=(),
+                )
+                self.row_lights[item] = "pending"
+                self.row_statuses[item] = "PENDIENTE"
+                self.row_urls[item] = ""
+                if self.active_filter is not None:
+                    self.tree.detach(item)
+            self.update_cards()
+        else:
+            self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
+            self.update_cards()
+            self.tree.delete(*self.tree.get_children())
+            self.row_urls.clear()
+            self.row_items.clear()
+            self.row_lights.clear()
+            self.row_statuses.clear()
+            self.row_order.clear()
         self.cached_count = 0
         self.direct_count = 0
+        bypass_cache = self.force_live_once
+        self.force_live_once = False
         products_to_check: list[InputProduct] = []
         expected_seller = self.expected_seller_var.get()
-        offer_cache = OfferCache()
+        offer_cache = OfferCache(get_offer_cache_path(self.marketplace_key))
         for product in self.products:
             feed_qty = parse_quantity(product.quantity)
             if feed_qty is not None and feed_qty <= 0:
@@ -649,7 +829,7 @@ class ModernDashboard(ctk.CTk):
                 self.direct_count += 1
                 continue
             cached_row = None
-            if self.use_cache_var.get():
+            if self.use_cache_var.get() and not bypass_cache:
                 cached_row = offer_cache.get_fresh(product, expected_seller, cache_ttl)
             if cached_row:
                 self.add_pending_row(product)
@@ -665,7 +845,8 @@ class ModernDashboard(ctk.CTk):
             self.progress.set(1)
             self.progress_text.set(f"Terminado sin navegador: {resolved} resueltos por cache/feed")
             return
-        self.checker = LeroyChecker(
+        self.checker = create_checker(
+            self.marketplace_key,
             products_to_check,
             expected_seller,
             delay,
@@ -676,6 +857,7 @@ class ModernDashboard(ctk.CTk):
             data_settle_ms=data_settle_ms,
             worker_count=worker_count,
             circuit_breaker_threshold=circuit_threshold,
+            cache_path=get_offer_cache_path(self.marketplace_key),
         )
         self.worker = threading.Thread(target=self.checker.run, args=(self.events,), daemon=True)
         self.worker.start()
@@ -692,6 +874,7 @@ class ModernDashboard(ctk.CTk):
             card.set_value(self.counts[key])
             card.set_active(self.active_filter == key)
         self.update_filter_title()
+        self.update_subfilter_buttons()
 
     def reset_worker_chips(self, count: int):
         if not hasattr(self, "worker_status_panel"):
@@ -718,6 +901,43 @@ class ModernDashboard(ctk.CTk):
                 "ua": False,
                 "status": "pendiente",
             }
+        self.update_worker_summary()
+
+    def update_worker_summary(self):
+        if not hasattr(self, "worker_summary_var"):
+            return
+        if not self.worker_meta:
+            self.worker_summary_var.set("Workers sin iniciar")
+            return
+
+        statuses = [str(meta.get("status", "pendiente")) for meta in self.worker_meta.values()]
+        active = statuses.count("activo")
+        paused = statuses.count("pausado")
+        warming = statuses.count("calentando")
+        blocked = statuses.count("bloqueado")
+        closed = statuses.count("cerrado")
+        disabled = sum(1 for meta in self.worker_meta.values() if not bool(meta.get("enabled", True)))
+        pending = statuses.count("pendiente")
+        proxies = sum(1 for meta in self.worker_meta.values() if meta.get("proxy"))
+        user_agents = sum(1 for meta in self.worker_meta.values() if meta.get("ua"))
+        total = len(self.worker_meta)
+
+        parts = [f"{active}/{total} workers activos"]
+        if pending:
+            parts.append(f"{pending} pendientes")
+        if warming:
+            parts.append(f"{warming} calentando")
+        if paused:
+            parts.append(f"{paused} pausados")
+        if blocked:
+            parts.append(f"{blocked} bloqueados")
+        if closed:
+            parts.append(f"{closed} cerrados")
+        if disabled:
+            parts.append(f"{disabled} desactivados")
+        parts.append(f"Proxy {proxies}/{total}")
+        parts.append(f"UA {user_agents}/{total}")
+        self.worker_summary_var.set(" | ".join(parts))
 
     def update_worker_chip(
         self,
@@ -745,11 +965,13 @@ class ModernDashboard(ctk.CTk):
         enabled_now = bool(meta.get("enabled", True))
         colors = {
             "pendiente": ("#F3F4F6", MUTED),
+            "calentando": ("#DBEAFE", "#1D4ED8"),
             "activo": ("#DCFCE7", "#166534"),
             "cerrado": ("#E5E7EB", "#4B5563"),
             "desactivado": ("#F3F4F6", "#98A2B3"),
             "bloqueado": ("#FEE2E2", "#991B1B"),
             "pausado": ("#FEF3C7", "#92400E"),
+            "pendiente challenge": ("#FEF3C7", "#92400E"),
             "error": ("#FEE2E2", "#991B1B"),
         }
         if not enabled_now:
@@ -760,11 +982,29 @@ class ModernDashboard(ctk.CTk):
             fg_color=fg,
             text_color=text_color,
         )
+        self.update_worker_summary()
 
     def set_filter(self, light: str | None):
         self.active_filter = None if self.active_filter == light else light
+        if self.active_filter != "red":
+            self.active_status_filter = None
         self.apply_filter()
         self.update_cards()
+        self.update_subfilter_buttons()
+
+    def clear_filters(self):
+        self.active_filter = None
+        self.active_status_filter = None
+        self.apply_filter()
+        self.update_cards()
+        self.update_subfilter_buttons()
+
+    def set_status_filter(self, status: str | None):
+        self.active_filter = "red"
+        self.active_status_filter = None if self.active_status_filter == status else status
+        self.apply_filter()
+        self.update_cards()
+        self.update_subfilter_buttons()
 
     def update_filter_title(self):
         if not hasattr(self, "results_title_var"):
@@ -773,13 +1013,41 @@ class ModernDashboard(ctk.CTk):
             self.results_title_var.set("Resultados")
             return
         _code, label, _color = LIGHT_META.get(self.active_filter, LIGHT_META["gray"])
-        visible = sum(1 for item in self.row_order if self.row_lights.get(item) == self.active_filter)
+        visible = sum(1 for item in self.row_order if self.item_matches_filters(item))
+        if self.active_status_filter:
+            label = self.business_status(self.active_status_filter)
         self.results_title_var.set(f"Resultados - {label} ({visible})")
+
+    def item_matches_filters(self, item: str) -> bool:
+        light = self.row_lights.get(item, "pending")
+        status = self.row_statuses.get(item, "")
+        if self.active_filter is not None and light != self.active_filter:
+            return False
+        if self.active_status_filter is not None and status != self.active_status_filter:
+            return False
+        return True
+
+    def update_subfilter_buttons(self):
+        if not hasattr(self, "subfilter_buttons"):
+            return
+        visible = self.active_filter == "red"
+        for status, button in self.subfilter_buttons.items():
+            if visible:
+                count = sum(1 for item in self.row_order if self.row_statuses.get(item) == status)
+                active = self.active_status_filter == status
+                button.configure(
+                    text=f"{self.business_status(status)} ({count})",
+                    fg_color="#FEE2E2" if active else "#FFFFFF",
+                    border_color=RED if active else BORDER,
+                    text_color=RED if active else TEXT,
+                )
+                button.pack(side="left", padx=(0, 6) if status == "NO_VIVA" else 0)
+            else:
+                button.pack_forget()
 
     def apply_filter(self):
         for item in self.row_order:
-            light = self.row_lights.get(item, "pending")
-            should_show = self.active_filter is None or light == self.active_filter
+            should_show = self.item_matches_filters(item)
             try:
                 self.tree.detach(item)
             except Exception:
@@ -817,13 +1085,23 @@ class ModernDashboard(ctk.CTk):
                     )
                 elif kind == "worker_status":
                     self.update_worker_chip(event[1], status=event[2])
-                    self.subtitle_var.set(f"Worker {event[1]} {event[2]}")
                 elif kind == "circuit_breaker":
                     for worker_id in self.worker_chips:
                         status = self.worker_meta.get(worker_id, {}).get("status")
                         if status == "activo":
                             self.update_worker_chip(worker_id, status="pausado")
                     self.progress_text.set(f"Corte tecnico activado tras {event[3]} senales: EAN {event[1]}")
+                elif kind == "worker_blocked":
+                    self.progress_text.set(f"Worker {event[1]} bloqueado: {event[2]}")
+                elif kind == "human_challenge_required":
+                    self.update_worker_chip(event[1], status="pendiente challenge")
+                    self.progress_text.set(f"Worten requiere resolver challenge manualmente en Worker {event[1]}")
+                elif kind == "human_challenge_resolved":
+                    self.update_worker_chip(event[1], status="activo")
+                    self.progress_text.set(f"Challenge resuelto en Worker {event[1]}; continuando")
+                elif kind == "human_challenge_timeout":
+                    self.update_worker_chip(event[1], status="bloqueado")
+                    self.progress_text.set(f"No se resolvio el challenge en Worker {event[1]}")
                 elif kind == "error":
                     messagebox.showerror("Error", event[1])
                 elif kind == "alert_sent":
@@ -837,14 +1115,16 @@ class ModernDashboard(ctk.CTk):
                     self.row_urls.clear()
                     self.row_items.clear()
                     self.row_lights.clear()
+                    self.row_statuses.clear()
                     self.row_order.clear()
                     self.active_filter = None
+                    self.active_status_filter = None
                     self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
                     self.update_cards()
                     for product in self.products:
                         self.add_pending_row(product)
                     self.progress.set(0)
-                    self.progress_text.set(f"{len(self.products)} productos cargados desde Shoppingfeed")
+                    self.progress_text.set(f"{len(self.products)} productos cargados desde {self.marketplace}")
                     self.subtitle_var.set(f"Catalogo vivo cacheado en {cache_path}")
                 elif kind == "catalog_error":
                     self.progress.set(0)
@@ -862,6 +1142,8 @@ class ModernDashboard(ctk.CTk):
             "SIN_STOCK_FEED": "Sin stock feed",
             "NO_VIVA": "Fuera del marketplace",
             "NO_ENCONTRADA_PRELIMINAR": "No encontrada",
+            "ENCONTRADO_PENDIENTE_DETALLE": "Encontrado, revisar detalle",
+            "WORTEN_LOGICA_PENDIENTE": "Worten pendiente",
             "INCIERTA": "Reintentar",
         }.get(status, status)
 

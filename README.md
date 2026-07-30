@@ -1,12 +1,15 @@
 # Nass Offer Checker
 
-Dashboard Windows/Python para revisar disponibilidad de ofertas en Leroy Merlin a partir de EANs o de un feed vivo de Shoppingfeed.
+Dashboard Windows/Python para revisar disponibilidad de ofertas en marketplaces a partir de EANs o de feeds vivos de Shoppingfeed.
 
-La app usa un navegador Chromium persistente mediante Playwright para consultar Leroy Merlin, clasifica cada producto con semaforos comerciales y guarda resultados locales para acelerar ejecuciones posteriores.
+La app usa navegadores Chromium persistentes mediante Playwright, clasifica cada producto con semaforos comerciales y guarda resultados locales para acelerar ejecuciones posteriores.
 
 ## Estado actual
 
-- Marketplace soportado: `Leroy Merlin`.
+- Marketplaces soportados:
+  - `Leroy Merlin`, con clasificacion comercial completa.
+  - `Carrefour`, base inicial con feed propio y busqueda batch de hasta 7 EAN.
+  - `Worten`, checker separado sobre pagina dedicada de seller.
 - Entrada manual por EAN.
 - Entrada CSV manual.
 - Entrada directa desde catalogo vivo de Shoppingfeed.
@@ -54,7 +57,24 @@ Ejemplo:
 
 ```json
 {
-  "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_TOKEN",
+  "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_LEROY_TOKEN",
+  "carrefour_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
+  "worten_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
+  "marketplaces": {
+    "leroy": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_LEROY_TOKEN"
+    },
+    "carrefour": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
+      "search_batch_size": 7
+    },
+    "worten": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
+      "seller_id": "e5dae97c-401c-456a-be59-56a4f73b0bb5",
+      "seller_name": "Mark JV shop",
+      "search_batch_size": 10
+    }
+  },
   "slack_webhook_url": "https://hooks.slack.com/services/PRIVATE/WEBHOOK/URL",
   "alerts_enabled": true,
   "alert_cooldown_minutes": 15
@@ -65,6 +85,8 @@ Tambien puedes usar variables de entorno:
 
 ```powershell
 $env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
+$env:CARREFOUR_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
+$env:WORTEN_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/..."
 $env:ALERTS_ENABLED = "true"
 $env:ALERT_COOLDOWN_MINUTES = "15"
@@ -73,7 +95,7 @@ $env:ALERT_COOLDOWN_MINUTES = "15"
 ## Uso
 
 1. Abre el dashboard.
-2. Selecciona `Leroy Merlin`.
+2. Selecciona `Leroy Merlin`, `Carrefour` o `Worten`.
 3. Pulsa `Cargar catalogo Shoppingfeed` o introduce EANs manualmente.
 4. Ajusta `Seller esperado`, normalmente `NEWLUX GROUP`.
 5. Deja activa la cache diferencial salvo que necesites un chequeo completo.
@@ -119,10 +141,12 @@ La app evita abrir Chromium cuando puede decidir antes:
 - Si `EAN + reference + quantity + price + seller esperado` no cambia, reutiliza el ultimo resultado dentro del TTL.
 - Resultados `INCIERTA` o tecnicos no se reutilizan desde cache.
 
-Cache local:
+Caches locales:
 
 ```text
-fase1/offer_cache.sqlite
+fase1/offer_cache_leroy.sqlite
+fase1/offer_cache_carrefour.sqlite
+fase1/offer_cache_worten.sqlite
 ```
 
 Este archivo no se versiona.
@@ -197,20 +221,62 @@ La aplicacion de proxy/User-Agent dentro de Playwright se deja para la siguiente
 
 La cola de trabajo es compartida: cada worker toma el siguiente producto pendiente y no repite productos ya tomados por otros workers.
 
-El texto superior de la ventana puede mostrar el ultimo evento recibido, por ejemplo `Worker 1 activo`. Ese texto no representa el estado agregado de todos los workers. El estado real de cada worker esta en los chips inferiores:
+La UI muestra un resumen agregado de workers y, debajo, el estado individual de cada uno:
 
 ```text
+2/10 workers activos | Proxy 0/10 | UA 0/10
 W1 activo | P:no | UA:def
 W2 activo | P:no | UA:def
 ```
 
+Antes de consumir productos, cada worker hace un warm-up abriendo la home. Si aparece challenge, se marca como `bloqueado`, se envia alerta tecnica si esta configurada y ese worker no toma productos de la cola.
+
 Pendiente recomendado antes de avanzar:
 
-- mostrar un resumen agregado tipo `2 workers activos`;
-- separar la ruta de salida del estado de workers;
-- anadir warm-up por worker antes de consumir la cola;
-- pausar workers individualmente cuando reciban challenge;
+- pausar workers individualmente cuando reciban challenge durante el analisis;
+- afinar el corte global cuando fallen varios workers;
 - aplicar proxy/User-Agent persistente por worker en Playwright.
+
+## Carrefour
+
+Carrefour usa un flujo de busqueda batch: hasta 7 EAN por navegacion, pegados separados por espacios en la query.
+
+Ejemplo:
+
+```text
+https://www.carrefour.es/?query=8435544806788%208435544888012%208435544894204
+```
+
+En esta base inicial:
+
+- el feed Carrefour se configura separado del feed Leroy;
+- la cache Carrefour se guarda separada;
+- los perfiles Chromium Carrefour se guardan separados;
+- Carrefour no usa el modo minimo agresivo de Leroy: deja cargar JS/XHR/CSS/recursos necesarios y espera mas antes de leer el HTML;
+- desde la busqueda Carrefour se extraen EAN, precio, seller, URL de ficha y boton de compra;
+- si seller esperado coincide y hay boton de compra, se marca verde `Correcto`;
+- si seller no coincide o falta boton de compra, se marca amarillo.
+
+## Worten
+
+Worten usa la pagina dedicada del seller `Mark JV shop`, equivalente operativo de `NEWLUX GROUP`:
+
+```text
+https://www.worten.pt/search?query=*&facetFilters=seller_id:e5dae97c-401c-456a-be59-56a4f73b0bb5&utm_source=sellerpage_redirect
+```
+
+Worten no depende de URL directa para multi-EAN: abre la pagina del seller en el warm-up, espera la carga real de fichas, pega tandas de 10 EANs separados por espacios reales en la lupa y encadena una busqueda tras otra desde el buscador actual. Solo vuelve a la pagina del seller si pierde el cuadro de busqueda y necesita recuperarse. Tras buscar, espera a que la URL ya contenga los EAN solicitados y extrae desde las tarjetas visibles `EAN`, titulo, precio, seller y URL. Los productos agrupados pueden renderizar varios nodos internos; se conserva esa evidencia y la clasificacion se mapea por `mrkean-<EAN>`. Si aparece un challenge anti-bot visible, la ventana se maximiza para resolucion manual y luego continua con la misma sesion. Si aparece el aviso de cookies tras el challenge, la app intenta aceptarlo y cachea ese estado por worker para no repetir el cierre pesado en cada tanda.
+
+## UI de Resultados
+
+La tabla muestra una columna `Producto` con el titulo/modelo extraido del marketplace cuando esta disponible.
+
+El semaforo rojo se mantiene como categoria comercial `Fuera`, pero al filtrar rojo aparecen subfiltros:
+
+- `Fuera marketplace`: productos que no se encuentran o no se venden en el marketplace.
+- `Sin stock feed`: productos saltados porque el feed indica stock `<= 0`.
+
+Al usar `Reintentar` desde un semaforo, la UI conserva el resto de resultados y solo recalcula los EAN del filtro seleccionado, evitando resetear todos los contadores.
 
 ## Alertas Slack
 
@@ -240,6 +306,7 @@ El repositorio ignora:
 
 - `local_settings.json`
 - perfiles Chromium;
+- perfiles Edge manual/CDP de Worten;
 - cookies/storage;
 - caches SQLite;
 - CSVs completos de Shoppingfeed;
