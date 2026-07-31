@@ -51,6 +51,7 @@ Las caches locales se guardan por marketplace:
 ```text
 fase1/offer_cache_leroy.sqlite
 fase1/offer_cache_carrefour.sqlite
+fase1/offer_cache_conforama.sqlite
 fase1/offer_cache_worten.sqlite
 ```
 
@@ -189,6 +190,7 @@ La URL privada del catalogo no se guarda en codigo. Configurala de una de estas 
 ```powershell
 $env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
 $env:CARREFOUR_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
+$env:CONFORAMA_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:WORTEN_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 ```
 
@@ -209,6 +211,9 @@ Con este formato:
     "carrefour": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
     },
+    "conforama": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
+    },
     "worten": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/...",
       "seller_id": "e5dae97c-401c-456a-be59-56a4f73b0bb5",
@@ -224,6 +229,7 @@ La app descarga el feed y lo cachea localmente en:
 ```text
 fase1/shoppingfeed_leroy_latest.csv
 fase1/shoppingfeed_carrefour_latest.csv
+fase1/shoppingfeed_conforama_latest.csv
 fase1/shoppingfeed_worten_latest.csv
 ```
 
@@ -296,6 +302,21 @@ Simulador de diagnostico:
 ```powershell
 python .\fase1\simulate_carrefour_worker.py --ean 8435544806788 --ean 8436616280192 --max-batches 1 --workers 1 --hold-seconds 5 --window-state minimized
 ```
+
+## Conforama
+
+Conforama busca por referencia interna `MKP...`, no por EAN. La app usa este archivo local no versionado:
+
+```text
+fase1/conforama_ean_mkp.xlsx
+```
+
+Columnas esperadas:
+
+- `EAN`;
+- `SKU de producto`, con valores `MKP...`.
+
+El checker traduce el EAN a MKP y consulta el `skusearch` de Conforama. Si devuelve el `MKP` exacto, marca verde `OK`; si no lo devuelve, marca rojo `NO_VIVA`; si no existe relacion EAN -> MKP en el Excel, marca gris `INCIERTA`.
 
 ## CSV manual
 

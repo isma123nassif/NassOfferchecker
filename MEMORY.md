@@ -87,6 +87,7 @@ local_settings.example.json
 - Logica de scraping y clasificacion en `dashboard_leroy.py`.
 - Configuracion multi-marketplace en `marketplaces.py`.
 - Selector inicial `Leroy Merlin` / `Carrefour` / `Worten`.
+- Selector incluye `Conforama`.
 - Entrada manual por EAN.
 - CSV manual.
 - Catalogo vivo desde Shoppingfeed por marketplace.
@@ -131,6 +132,16 @@ local_settings.example.json
   - verde si seller esperado coincide y hay boton de compra;
   - amarillo si seller no coincide, seller no se extrae o falta boton de compra;
   - rojo `NO_VIVA` si Carrefour muestra banner de no coincidencia exacta para el EAN y sugiere otro producto.
+- Base Conforama:
+  - feed Shoppingfeed propio;
+  - cache propia;
+  - busqueda por referencia interna `MKP...`, no por EAN;
+  - mapa local no versionado `fase1/conforama_ean_mkp.xlsx`;
+  - columna `EAN` asociada a columna `SKU de producto`;
+  - consulta directa al endpoint Empathy `skusearch`;
+  - verde si devuelve el `MKP` exacto;
+  - rojo `NO_VIVA` si el `MKP` no aparece;
+  - gris `INCIERTA` si falta asociacion EAN -> MKP o falla la API.
 - Base Worten:
   - feed Shoppingfeed propio;
   - cache propia;
@@ -154,6 +165,8 @@ El 2026-07-31 se corrigio Carrefour:
 - Si una busqueda batch devuelve HTML con resultados pero no permite mapear una tarjeta al EAN, Carrefour reintenta esos EANs individualmente antes de devolver gris tecnico.
 - El warm-up Carrefour usa Chromium persistente por worker con `--disable-quic`, reintento ante errores de navegacion y cierre aislado del worker que falle, sin parar automaticamente el resto.
 - Se anadio `fase1/simulate_carrefour_worker.py` para reproducir ejecuciones visibles, maximizadas o minimizadas, con uno o dos workers y EANs concretos.
+
+Tambien se anadio Conforama. El archivo `offers (3).xlsx` de Descargas se copio localmente como `fase1/conforama_ean_mkp.xlsx` y queda ignorado por Git. Validacion real: EAN `8435544893344` se mapea a `MKP1716081` y Conforama devuelve verde `OK`, precio `119,60 €`, URL `https://www.conforama.es/colchon-viscoelastico-one-15-nalui-mkpv255951-blanco-mkp1716081`.
 
 Se archivo la logica compleja de Worten en `archive/dashboard_leroy_worten_legacy_20260730.py` y se reactivo Worten con el flujo simple validado: seller page solo como warm-up/recuperacion, busquedas encadenadas por input en tandas de 10 EAN y extraccion desde tarjetas visibles. La UI ahora separa rojos por `NO_VIVA` y `SIN_STOCK_FEED`, muestra columna `Producto` y mantiene contadores al reintentar filtros.
 

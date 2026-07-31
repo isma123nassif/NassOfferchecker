@@ -10,6 +10,7 @@ La app usa navegadores Chromium persistentes mediante Playwright, clasifica cada
   - `Leroy Merlin`, con clasificacion comercial completa.
   - `Carrefour`, base inicial con feed propio y busqueda batch de hasta 7 EAN.
   - `Worten`, checker separado sobre pagina dedicada de seller.
+  - `Conforama`, busqueda por referencia interna `MKP...` usando mapa local EAN -> MKP.
 - Entrada manual por EAN.
 - Entrada CSV manual.
 - Entrada directa desde catalogo vivo de Shoppingfeed.
@@ -59,6 +60,7 @@ Ejemplo:
 {
   "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_LEROY_TOKEN",
   "carrefour_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
+  "conforama_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CONFORAMA_TOKEN",
   "worten_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
   "marketplaces": {
     "leroy": {
@@ -67,6 +69,9 @@ Ejemplo:
     "carrefour": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
       "search_batch_size": 7
+    },
+    "conforama": {
+      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CONFORAMA_TOKEN"
     },
     "worten": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
@@ -86,6 +91,7 @@ Tambien puedes usar variables de entorno:
 ```powershell
 $env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
 $env:CARREFOUR_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
+$env:CONFORAMA_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:WORTEN_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/..."
 $env:ALERTS_ENABLED = "true"
@@ -146,6 +152,7 @@ Caches locales:
 ```text
 fase1/offer_cache_leroy.sqlite
 fase1/offer_cache_carrefour.sqlite
+fase1/offer_cache_conforama.sqlite
 fase1/offer_cache_worten.sqlite
 ```
 
@@ -269,6 +276,25 @@ Diagnostico local:
 ```powershell
 python .\fase1\simulate_carrefour_worker.py --ean 8435544806788 --ean 8436616280192 --max-batches 1 --workers 1 --hold-seconds 5 --window-state minimized
 ```
+
+## Conforama
+
+Conforama no localiza los productos por EAN en la busqueda publica. Para este marketplace la app usa el archivo local:
+
+```text
+fase1/conforama_ean_mkp.xlsx
+```
+
+Ese Excel no se versiona. Debe contener una columna `EAN` y una columna `SKU de producto` con referencias `MKP...`.
+
+Flujo:
+
+- antes de buscar, el checker convierte cada EAN a su referencia `MKP...`;
+- la URL visual equivalente es `https://www.conforama.es/?query=MKP1716081`;
+- la comprobacion real usa el endpoint `skusearch` de Conforama/Empathy para confirmar que vuelve el `MKP` exacto;
+- verde `OK`: el `MKP` exacto aparece visible en Conforama;
+- rojo `NO_VIVA`: el `MKP` no aparece en Conforama;
+- gris `INCIERTA`: falta la relacion EAN -> MKP o falla la API.
 
 ## Worten
 

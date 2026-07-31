@@ -10,7 +10,9 @@ import threading
 import time
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from html import unescape
@@ -32,6 +34,7 @@ PROFILE_DIR = FASE_DIR / "browser_profile_leroy"
 RUNS_DIR = FASE_DIR / "dashboard_runs"
 CACHE_DB_PATH = FASE_DIR / "offer_cache.sqlite"
 LOCAL_SETTINGS_PATH = BASE_DIR / "local_settings.json"
+CONFORAMA_REFERENCE_MAP_PATH = FASE_DIR / "conforama_ean_mkp.xlsx"
 LEROY_HOME_URL = "https://www.leroymerlin.es/"
 LEROY_SEARCH_URL = "https://www.leroymerlin.es/search?q={ean}"
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
@@ -235,6 +238,48 @@ def read_products_csv(path: Path) -> list[InputProduct]:
         if ean and ean.lower() != "ean":
             products.append(InputProduct(ean=ean))
     return products
+
+
+def load_conforama_reference_map(path: Path = CONFORAMA_REFERENCE_MAP_PATH) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return {}
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = sheet.iter_rows(values_only=True)
+        headers = next(rows, None)
+        if not headers:
+            return {}
+        normalized_headers = {normalize(str(header or "")): index for index, header in enumerate(headers)}
+        ean_index = normalized_headers.get("ean")
+        reference_index = (
+            normalized_headers.get("sku de producto")
+            or normalized_headers.get("sku producto")
+            or normalized_headers.get("producto sku")
+            or normalized_headers.get("reference")
+            or normalized_headers.get("sku")
+        )
+        if ean_index is None or reference_index is None:
+            return {}
+
+        reference_map: dict[str, str] = {}
+        for row in rows:
+            ean = str(row[ean_index] or "").strip()
+            reference = str(row[reference_index] or "").strip().upper()
+            if ean.endswith(".0"):
+                ean = ean[:-2]
+            if reference.startswith("MKP") and ean:
+                reference_map[ean] = reference
+        return reference_map
+    except Exception:
+        return {}
 
 
 def extract_candidate_urls(content: str) -> list[str]:
@@ -2863,6 +2908,227 @@ class WortenChecker(WortenCheckerLegacy):
         return rows, page
 
 
+class ConforamaChecker(LeroyChecker):
+    marketplace_key = "conforama"
+    api_url = "https://api.empathy.co/search/v1/query/conforama/skusearch"
+
+    def __init__(self, products: list[InputProduct], *args, **kwargs):
+        self.reference_map = load_conforama_reference_map()
+        mapped_products = [self.with_conforama_reference(product) for product in products]
+        super().__init__(mapped_products, *args, **kwargs)
+
+    def with_conforama_reference(self, product: InputProduct) -> InputProduct:
+        reference = (product.reference or "").strip().upper()
+        if not reference.startswith("MKP"):
+            reference = self.reference_map.get(product.ean.strip(), "")
+        return InputProduct(
+            ean=product.ean,
+            reference=reference,
+            quantity=product.quantity,
+            price=product.price,
+        )
+
+    def build_api_url(self, reference: str) -> str:
+        params = urllib.parse.urlencode(
+            {
+                "query": reference,
+                "start": "0",
+                "rows": "10",
+                "lang": "es",
+                "store": "es",
+            }
+        )
+        return f"{self.api_url}?{params}"
+
+    def format_price(self, value) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return f"{number:.2f}".replace(".", ",") + " €"
+
+    def fetch_reference(self, reference: str) -> dict:
+        request = urllib.request.Request(
+            self.build_api_url(reference),
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+                "x-origin": "https://www.conforama.es",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=max(self.retry_timeout_ms / 1000, 10)) as response:
+            payload = response.read().decode("utf-8", errors="replace")
+        return json.loads(payload)
+
+    def check_conforama_product(self, product: InputProduct, index: int) -> DashboardResult:
+        started = time.monotonic()
+        reference = product.reference.strip().upper()
+        search_url = build_marketplace_search_url(self.marketplace_key, [reference or product.ean])
+        if not reference.startswith("MKP"):
+            return DashboardResult(
+                ean=product.ean,
+                reference=product.reference,
+                feed_quantity=product.quantity,
+                feed_price=product.price,
+                light="gray",
+                status="INCIERTA",
+                final_url=search_url,
+                title="",
+                sku="",
+                seller_name="",
+                marketplace_price="",
+                product_availability="unknown",
+                offer_available=False,
+                buybox_ok="unknown",
+                challenge_detected=False,
+                reason="sin referencia MKP local para buscar en Conforama",
+                elapsed_seconds=round(time.monotonic() - started, 2),
+                html_path="",
+            )
+
+        try:
+            data = self.fetch_reference(reference)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            return DashboardResult(
+                ean=product.ean,
+                reference=reference,
+                feed_quantity=product.quantity,
+                feed_price=product.price,
+                light="gray",
+                status="INCIERTA",
+                final_url=search_url,
+                title="",
+                sku=reference,
+                seller_name="",
+                marketplace_price="",
+                product_availability="unknown",
+                offer_available=False,
+                buybox_ok="unknown",
+                challenge_detected=False,
+                reason=f"error API Conforama: {exc}",
+                elapsed_seconds=round(time.monotonic() - started, 2),
+                html_path="",
+            )
+
+        catalog = data.get("catalog", {}) if isinstance(data, dict) else {}
+        content = catalog.get("content", []) if isinstance(catalog, dict) else []
+        exact = None
+        for item in content:
+            if isinstance(item, dict) and str(item.get("id", "")).strip().upper() == reference:
+                exact = item
+                break
+
+        if not exact:
+            json_file = self.run_dir / f"{index:04d}_{product.ean}_conforama.json"
+            json_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            return DashboardResult(
+                ean=product.ean,
+                reference=reference,
+                feed_quantity=product.quantity,
+                feed_price=product.price,
+                light="red",
+                status="NO_VIVA",
+                final_url=search_url,
+                title="",
+                sku=reference,
+                seller_name="",
+                marketplace_price="",
+                product_availability="not_found",
+                offer_available=False,
+                buybox_ok="n/a",
+                challenge_detected=False,
+                reason="MKP no encontrado en Conforama",
+                elapsed_seconds=round(time.monotonic() - started, 2),
+                html_path=str(json_file),
+            )
+
+        price = exact.get("currentPrice", exact.get("salePrice", exact.get("price", "")))
+        return DashboardResult(
+            ean=product.ean,
+            reference=reference,
+            feed_quantity=product.quantity,
+            feed_price=product.price,
+            light="green",
+            status="OK",
+            final_url=str(exact.get("url") or search_url),
+            title=str(exact.get("name") or ""),
+            sku=reference,
+            seller_name="",
+            marketplace_price=self.format_price(price),
+            product_availability="available",
+            offer_available=True,
+            buybox_ok="n/a",
+            challenge_detected=False,
+            reason="MKP exacto visible en Conforama",
+            elapsed_seconds=round(time.monotonic() - started, 2),
+            html_path="",
+        )
+
+    def browser_worker(self, worker_id: int, work_queue: queue.Queue, events: queue.Queue) -> None:
+        final_status = "cerrado"
+        try:
+            events.put(("worker_status", worker_id, "activo"))
+            total = len(self.products)
+            while not self.stop_requested:
+                try:
+                    index, product = work_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    row = self.check_conforama_product(product, index)
+                    completed = self.record_result(row, index, total, events)
+                    events.put(("result", completed, total, row))
+                    if not self.stop_requested and completed < total:
+                        time.sleep(self.delay)
+                finally:
+                    work_queue.task_done()
+        except Exception as exc:
+            self.stop_requested = True
+            events.put(("error", f"worker {worker_id}: {exc}"))
+        finally:
+            events.put(("worker_status", worker_id, final_status))
+
+    def run(self, events: queue.Queue) -> None:
+        self.events = events
+        started = time.monotonic()
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        events.put(("run_dir", str(self.run_dir)))
+        events.put(("phase3", self.worker_count, self.circuit_breaker_threshold))
+        for config in self.worker_configs:
+            events.put(
+                (
+                    "worker_config",
+                    config.id,
+                    config.enabled,
+                    config.proxy_configured,
+                    config.user_agent_configured,
+                )
+            )
+            if not config.enabled:
+                events.put(("worker_status", config.id, "desactivado"))
+
+        work_queue: queue.Queue = queue.Queue()
+        for index, product in enumerate(self.products, start=1):
+            work_queue.put((index, product))
+
+        worker_threads = []
+        for config in self.active_worker_configs:
+            thread = threading.Thread(target=self.browser_worker, args=(config.id, work_queue, events), daemon=True)
+            worker_threads.append(thread)
+            thread.start()
+
+        for thread in worker_threads:
+            thread.join()
+
+        elapsed = round(time.monotonic() - started, 1)
+        summary = str(self.summary_path)
+        if self.circuit_open:
+            summary = f"{summary} - corte tecnico activo"
+        events.put(("done", elapsed, summary))
+
+
 def completed_count_safe_index(row: DashboardResult, products: list[InputProduct]) -> int:
     for index, product in enumerate(products, start=1):
         if product.ean == row.ean:
@@ -2875,6 +3141,8 @@ def create_checker(marketplace_key: str, *args, **kwargs):
         return CarrefourChecker(*args, **kwargs)
     if marketplace_key == "worten":
         return WortenChecker(*args, **kwargs)
+    if marketplace_key == "conforama":
+        return ConforamaChecker(*args, **kwargs)
     return LeroyChecker(*args, **kwargs)
 
 

@@ -57,6 +57,17 @@ MARKETPLACES: dict[str, MarketplaceConfig] = {
         env_vars=("WORTEN_SHOPPINGFEED_URL",),
         legacy_settings_keys=("worten_shoppingfeed_url",),
     ),
+    "conforama": MarketplaceConfig(
+        key="conforama",
+        label="Conforama",
+        brand_lines=("CONFO", "RAMA"),
+        home_url="https://www.conforama.es/",
+        search_batch_size=1,
+        feed_cache_filename="shoppingfeed_conforama_latest.csv",
+        offer_cache_filename="offer_cache_conforama.sqlite",
+        env_vars=("CONFORAMA_SHOPPINGFEED_URL",),
+        legacy_settings_keys=("conforama_shoppingfeed_url",),
+    ),
 }
 
 MARKETPLACE_LABELS = [config.label for config in MARKETPLACES.values()]
@@ -124,6 +135,9 @@ def build_marketplace_search_url(key_or_label: str, eans: list[str]) -> str:
         query = quote(" ".join(clean_eans[: config.search_batch_size])) if clean_eans else "*"
         seller_id = "e5dae97c-401c-456a-be59-56a4f73b0bb5"
         return f"https://www.worten.pt/search?query={query}&facetFilters=seller_id:{seller_id}&utm_source=sellerpage_redirect"
+    if config.key == "conforama":
+        query = quote(clean_eans[0]) if clean_eans else ""
+        return f"https://www.conforama.es/?query={query}"
     ean = quote(clean_eans[0]) if clean_eans else ""
     return f"https://www.leroymerlin.es/search?q={ean}"
 
