@@ -127,6 +127,16 @@ class ManualChallengeNotResolved(Exception):
     pass
 
 
+class ConforamaApiBlocked(Exception):
+    def __init__(self, status_code: int, retry_after_seconds: int = 0):
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+        message = f"bloqueo API Conforama HTTP {status_code}"
+        if retry_after_seconds:
+            message = f"{message}; retry-after {retry_after_seconds}s"
+        super().__init__(message)
+
+
 def read_local_settings() -> dict:
     if not LOCAL_SETTINGS_PATH.exists():
         return {}
@@ -2916,6 +2926,14 @@ class ConforamaChecker(LeroyChecker):
         self.reference_map = load_conforama_reference_map()
         mapped_products = [self.with_conforama_reference(product) for product in products]
         super().__init__(mapped_products, *args, **kwargs)
+        self.active_worker_configs = self.active_worker_configs[:1]
+        self.worker_configs = self.active_worker_configs
+        self.worker_count = len(self.active_worker_configs)
+        self.conforama_request_lock = threading.Lock()
+        self.conforama_response_cache: dict[str, dict] = {}
+        self.conforama_next_request_at = 0.0
+        self.conforama_blocked_until = 0.0
+        self.conforama_min_interval_seconds = 5.0
 
     def with_conforama_reference(self, product: InputProduct) -> InputProduct:
         reference = (product.reference or "").strip().upper()
@@ -2931,11 +2949,16 @@ class ConforamaChecker(LeroyChecker):
     def build_api_url(self, reference: str) -> str:
         params = urllib.parse.urlencode(
             {
+                "internal": "true",
                 "query": reference,
+                "origin": "url:external",
                 "start": "0",
                 "rows": "10",
+                "instance": "conforama",
                 "lang": "es",
                 "store": "es",
+                "scope": "desktop",
+                "currency": "EUR",
             }
         )
         return f"{self.api_url}?{params}"
@@ -2950,17 +2973,58 @@ class ConforamaChecker(LeroyChecker):
         return f"{number:.2f}".replace(".", ",") + " €"
 
     def fetch_reference(self, reference: str) -> dict:
+        reference = reference.strip().upper()
+        with self.conforama_request_lock:
+            cached = self.conforama_response_cache.get(reference)
+            if cached is not None:
+                return cached
+
+            now = time.monotonic()
+            blocked_wait = self.conforama_blocked_until - now
+            if blocked_wait > 0:
+                raise ConforamaApiBlocked(0, int(blocked_wait))
+            wait_seconds = self.conforama_next_request_at - now
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self.conforama_next_request_at = time.monotonic() + self.conforama_min_interval_seconds
+
         request = urllib.request.Request(
             self.build_api_url(reference),
             headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "es-ES,es;q=0.9",
+                "Origin": "https://www.conforama.es",
+                "Referer": build_marketplace_search_url(self.marketplace_key, [reference]),
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Dest": "empty",
                 "x-origin": "https://www.conforama.es",
             },
         )
-        with urllib.request.urlopen(request, timeout=max(self.retry_timeout_ms / 1000, 10)) as response:
-            payload = response.read().decode("utf-8", errors="replace")
-        return json.loads(payload)
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.retry_timeout_ms / 1000, 10)) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            retry_after = 0
+            try:
+                retry_after = int(exc.headers.get("Retry-After", "0") or 0)
+            except (TypeError, ValueError):
+                retry_after = 0
+            if exc.code in {403, 429, 503}:
+                backoff = max(retry_after, 90)
+                with self.conforama_request_lock:
+                    self.conforama_blocked_until = max(self.conforama_blocked_until, time.monotonic() + backoff)
+                raise ConforamaApiBlocked(exc.code, retry_after) from exc
+            raise
+        data = json.loads(payload)
+        with self.conforama_request_lock:
+            self.conforama_response_cache[reference] = data
+        return data
 
     def check_conforama_product(self, product: InputProduct, index: int) -> DashboardResult:
         started = time.monotonic()
@@ -2990,6 +3054,29 @@ class ConforamaChecker(LeroyChecker):
 
         try:
             data = self.fetch_reference(reference)
+        except ConforamaApiBlocked as exc:
+            self.circuit_open = True
+            self.stop_requested = True
+            return DashboardResult(
+                ean=product.ean,
+                reference=reference,
+                feed_quantity=product.quantity,
+                feed_price=product.price,
+                light="gray",
+                status="INCIERTA",
+                final_url=search_url,
+                title="",
+                sku=reference,
+                seller_name="",
+                marketplace_price="",
+                product_availability="unknown",
+                offer_available=False,
+                buybox_ok="unknown",
+                challenge_detected=True,
+                reason=str(exc),
+                elapsed_seconds=round(time.monotonic() - started, 2),
+                html_path="",
+            )
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             return DashboardResult(
                 ean=product.ean,
@@ -3014,6 +3101,29 @@ class ConforamaChecker(LeroyChecker):
 
         catalog = data.get("catalog", {}) if isinstance(data, dict) else {}
         content = catalog.get("content", []) if isinstance(catalog, dict) else []
+        if not isinstance(catalog, dict) or not isinstance(content, list) or "numFound" not in catalog:
+            json_file = self.run_dir / f"{index:04d}_{product.ean}_conforama_suspicious.json"
+            json_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            return DashboardResult(
+                ean=product.ean,
+                reference=reference,
+                feed_quantity=product.quantity,
+                feed_price=product.price,
+                light="gray",
+                status="INCIERTA",
+                final_url=search_url,
+                title="",
+                sku=reference,
+                seller_name="",
+                marketplace_price="",
+                product_availability="unknown",
+                offer_available=False,
+                buybox_ok="unknown",
+                challenge_detected=False,
+                reason="respuesta API Conforama incompleta o sospechosa",
+                elapsed_seconds=round(time.monotonic() - started, 2),
+                html_path=str(json_file),
+            )
         exact = None
         for item in content:
             if isinstance(item, dict) and str(item.get("id", "")).strip().upper() == reference:

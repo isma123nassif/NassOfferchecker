@@ -168,6 +168,8 @@ El 2026-07-31 se corrigio Carrefour:
 
 Tambien se anadio Conforama. El archivo `offers (3).xlsx` de Descargas se copio localmente como `fase1/conforama_ean_mkp.xlsx` y queda ignorado por Git. Validacion real: EAN `8435544893344` se mapea a `MKP1716081` y Conforama devuelve verde `OK`, precio `119,60 €`, URL `https://www.conforama.es/colchon-viscoelastico-one-15-nalui-mkpv255951-blanco-mkp1716081`.
 
+Tras varios intentos se observo riesgo de bloqueo temporal de `api.empathy.co` por rafagas: Conforama heredaba hasta 10 workers pero usa una API directa. Se dejo Conforama con 1 worker efectivo, throttle global de 5s entre llamadas, cache en memoria por MKP, headers tipo frontend y URL `skusearch` con parametros de la web real (`internal`, `origin`, `instance`, `scope`, `currency`). Ante HTTP `403`, `429` o `503` marca gris tecnico, abre corte y evita convertir bloqueos temporales en `NO_VIVA` cacheados.
+
 Se archivo la logica compleja de Worten en `archive/dashboard_leroy_worten_legacy_20260730.py` y se reactivo Worten con el flujo simple validado: seller page solo como warm-up/recuperacion, busquedas encadenadas por input en tandas de 10 EAN y extraccion desde tarjetas visibles. La UI ahora separa rojos por `NO_VIVA` y `SIN_STOCK_FEED`, muestra columna `Producto` y mantiene contadores al reintentar filtros.
 
 Anteriormente se corrigio la confusion visual del texto `Worker 1 activo`, se anadio warm-up por worker y se sento la base Carrefour.
