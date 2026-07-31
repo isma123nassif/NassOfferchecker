@@ -133,7 +133,7 @@ local_settings.example.json
   - amarillo si seller no coincide, seller no se extrae o falta boton de compra;
   - rojo `NO_VIVA` si Carrefour muestra banner de no coincidencia exacta para el EAN y sugiere otro producto.
 - Base Conforama:
-  - feed Shoppingfeed propio;
+  - carga catalogo desde el mismo feed Shoppingfeed configurado para Leroy Merlin, salvo override propio de Conforama;
   - cache propia;
   - busqueda por referencia interna `MKP...`, no por EAN;
   - mapa local no versionado `fase1/conforama_ean_mkp.xlsx`;

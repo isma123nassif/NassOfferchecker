@@ -10,9 +10,6 @@
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
       "search_batch_size": 7
     },
-    "conforama": {
-      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CONFORAMA_TOKEN"
-    },
     "worten": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
       "seller_id": "e5dae97c-401c-456a-be59-56a4f73b0bb5",

@@ -190,7 +190,6 @@ La URL privada del catalogo no se guarda en codigo. Configurala de una de estas 
 ```powershell
 $env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
 $env:CARREFOUR_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
-$env:CONFORAMA_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:WORTEN_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 ```
 
@@ -209,9 +208,6 @@ Con este formato:
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
     },
     "carrefour": {
-      "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
-    },
-    "conforama": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/..."
     },
     "worten": {
@@ -317,6 +313,8 @@ Columnas esperadas:
 - `SKU de producto`, con valores `MKP...`.
 
 El checker traduce el EAN a MKP y consulta el `skusearch` de Conforama. Si devuelve el `MKP` exacto, marca verde `OK`; si no lo devuelve, marca rojo `NO_VIVA`; si no existe relacion EAN -> MKP en el Excel, marca gris `INCIERTA`.
+
+Al pulsar `Cargar catalogo Shoppingfeed` en Conforama, la app reutiliza el feed configurado para Leroy Merlin. Solo usa una URL propia si existe `CONFORAMA_SHOPPINGFEED_URL` o `marketplaces.conforama.shoppingfeed_url`.
 
 ## CSV manual
 

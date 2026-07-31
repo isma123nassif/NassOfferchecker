@@ -65,8 +65,8 @@ MARKETPLACES: dict[str, MarketplaceConfig] = {
         search_batch_size=1,
         feed_cache_filename="shoppingfeed_conforama_latest.csv",
         offer_cache_filename="offer_cache_conforama.sqlite",
-        env_vars=("CONFORAMA_SHOPPINGFEED_URL",),
-        legacy_settings_keys=("conforama_shoppingfeed_url",),
+        env_vars=("CONFORAMA_SHOPPINGFEED_URL", "LEROY_SHOPPINGFEED_URL", "SHOPPINGFEED_CATALOG_URL", "SHOPPINGFEED_URL"),
+        legacy_settings_keys=("conforama_shoppingfeed_url", "shoppingfeed_url"),
     ),
 }
 
@@ -107,6 +107,12 @@ def get_marketplace_feed_url(key_or_label: str) -> str:
             value = str(marketplace_settings.get("shoppingfeed_url", "") or "").strip()
             if value:
                 return value
+        if config.key == "conforama":
+            leroy_settings = marketplaces.get("leroy", {})
+            if isinstance(leroy_settings, dict):
+                value = str(leroy_settings.get("shoppingfeed_url", "") or "").strip()
+                if value:
+                    return value
 
     for legacy_key in config.legacy_settings_keys:
         value = str(settings.get(legacy_key, "") or "").strip()

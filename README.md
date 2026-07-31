@@ -60,7 +60,6 @@ Ejemplo:
 {
   "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_LEROY_TOKEN",
   "carrefour_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
-  "conforama_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CONFORAMA_TOKEN",
   "worten_shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
   "marketplaces": {
     "leroy": {
@@ -69,9 +68,6 @@ Ejemplo:
     "carrefour": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CARREFOUR_TOKEN",
       "search_batch_size": 7
-    },
-    "conforama": {
-      "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_CONFORAMA_TOKEN"
     },
     "worten": {
       "shoppingfeed_url": "https://export.shopping-feed.com/stream/PRIVATE_WORTEN_TOKEN",
@@ -91,7 +87,6 @@ Tambien puedes usar variables de entorno:
 ```powershell
 $env:SHOPPINGFEED_CATALOG_URL = "https://export.shopping-feed.com/stream/..."
 $env:CARREFOUR_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
-$env:CONFORAMA_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:WORTEN_SHOPPINGFEED_URL = "https://export.shopping-feed.com/stream/..."
 $env:SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/..."
 $env:ALERTS_ENABLED = "true"
@@ -290,6 +285,7 @@ Ese Excel no se versiona. Debe contener una columna `EAN` y una columna `SKU de 
 Flujo:
 
 - antes de buscar, el checker convierte cada EAN a su referencia `MKP...`;
+- al cargar catalogo, Conforama usa el mismo feed Shoppingfeed configurado para Leroy Merlin, salvo que se defina una URL propia `CONFORAMA_SHOPPINGFEED_URL` o `marketplaces.conforama.shoppingfeed_url`;
 - la URL visual equivalente es `https://www.conforama.es/?query=MKP1716081`;
 - la comprobacion real usa el endpoint `skusearch` de Conforama/Empathy para confirmar que vuelve el `MKP` exacto;
 - verde `OK`: el `MKP` exacto aparece visible en Conforama;
