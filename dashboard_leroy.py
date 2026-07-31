@@ -292,6 +292,58 @@ def load_conforama_reference_map(path: Path = CONFORAMA_REFERENCE_MAP_PATH) -> d
         return {}
 
 
+def normalize_conforama_reference(value) -> str:
+    reference = str(value or "").strip().upper()
+    if reference.endswith(".0"):
+        reference = reference[:-2]
+    return reference
+
+
+def load_conforama_offer_reference_map(path: Path = CONFORAMA_REFERENCE_MAP_PATH) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return {}
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = sheet.iter_rows(values_only=True)
+        headers = next(rows, None)
+        if not headers:
+            return {}
+        normalized_headers = {normalize(str(header or "")): index for index, header in enumerate(headers)}
+        offer_index = (
+            normalized_headers.get("sku de oferta")
+            or normalized_headers.get("sku oferta")
+            or normalized_headers.get("offer sku")
+            or normalized_headers.get("reference")
+            or normalized_headers.get("ref")
+        )
+        mkp_index = (
+            normalized_headers.get("sku de producto")
+            or normalized_headers.get("sku producto")
+            or normalized_headers.get("producto sku")
+            or normalized_headers.get("sku")
+        )
+        if offer_index is None or mkp_index is None:
+            return {}
+
+        reference_map: dict[str, str] = {}
+        for row in rows:
+            offer_reference = normalize_conforama_reference(row[offer_index])
+            mkp_reference = normalize_conforama_reference(row[mkp_index])
+            if offer_reference and mkp_reference.startswith("MKP"):
+                reference_map[offer_reference] = mkp_reference
+        return reference_map
+    except Exception:
+        return {}
+
+
 def extract_candidate_urls(content: str) -> list[str]:
     patterns = [
         r"https://www\.leroymerlin\.es/productos/[^\"'<>\\\s]+?\.html",
@@ -2924,6 +2976,7 @@ class ConforamaChecker(LeroyChecker):
 
     def __init__(self, products: list[InputProduct], *args, **kwargs):
         self.reference_map = load_conforama_reference_map()
+        self.offer_reference_map = load_conforama_offer_reference_map()
         mapped_products = [self.with_conforama_reference(product) for product in products]
         super().__init__(mapped_products, *args, **kwargs)
         self.active_worker_configs = self.active_worker_configs[:1]
@@ -2936,9 +2989,12 @@ class ConforamaChecker(LeroyChecker):
         self.conforama_min_interval_seconds = 5.0
 
     def with_conforama_reference(self, product: InputProduct) -> InputProduct:
-        reference = (product.reference or "").strip().upper()
+        source_reference = normalize_conforama_reference(product.reference)
+        reference = source_reference
         if not reference.startswith("MKP"):
-            reference = self.reference_map.get(product.ean.strip(), "")
+            reference = self.offer_reference_map.get(source_reference, "")
+        if not reference.startswith("MKP"):
+            reference = self.reference_map.get(product.ean.strip(), source_reference)
         return InputProduct(
             ean=product.ean,
             reference=reference,

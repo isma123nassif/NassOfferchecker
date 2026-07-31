@@ -170,6 +170,8 @@ Tambien se anadio Conforama. El archivo `offers (3).xlsx` de Descargas se copio 
 
 Tras varios intentos se observo riesgo de bloqueo temporal de `api.empathy.co` por rafagas: Conforama heredaba hasta 10 workers pero usa una API directa. Se dejo Conforama con 1 worker efectivo, throttle global de 5s entre llamadas, cache en memoria por MKP, headers tipo frontend y URL `skusearch` con parametros de la web real (`internal`, `origin`, `instance`, `scope`, `currency`). Ante HTTP `403`, `429` o `503` marca gris tecnico, abre corte y evita convertir bloqueos temporales en `NO_VIVA` cacheados.
 
+Despues se vio que la mayoria de grises no eran caida del endpoint: el feed de Leroy reutilizado por Conforama trae `reference` con el `SKU de oferta` (`1200571`, `DD-...`), mientras que el checker solo consultaba EAN -> MKP. Se anadio mapa `SKU de oferta` -> `SKU de producto` desde el mismo Excel. Cobertura local actual sobre `shoppingfeed_conforama_latest.csv`: 1602/1749 filas mapean a MKP; 147 quedan grises porque no existen en `fase1/conforama_ean_mkp.xlsx`.
+
 Se archivo la logica compleja de Worten en `archive/dashboard_leroy_worten_legacy_20260730.py` y se reactivo Worten con el flujo simple validado: seller page solo como warm-up/recuperacion, busquedas encadenadas por input en tandas de 10 EAN y extraccion desde tarjetas visibles. La UI ahora separa rojos por `NO_VIVA` y `SIN_STOCK_FEED`, muestra columna `Producto` y mantiene contadores al reintentar filtros.
 
 Anteriormente se corrigio la confusion visual del texto `Worker 1 activo`, se anadio warm-up por worker y se sento la base Carrefour.
