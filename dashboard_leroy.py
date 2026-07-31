@@ -284,6 +284,7 @@ def visible_text(content: str) -> str:
 
 def challenge_detected(content: str, title: str, url: str) -> bool:
     lowered = f"{title}\n{url}\n{content[:200000]}".lower()
+    text = visible_text(content[:200000])
     usable = len(content.encode("utf-8")) > 50_000 and "leroy merlin" in lowered
     has_product_signal = (
         'id="jsonld_product"' in lowered
@@ -291,23 +292,34 @@ def challenge_detected(content: str, title: str, url: str) -> bool:
         or "schema.org/discontinued" in lowered
         or "recommendation-no-offer-banner" in lowered
     )
+    has_home_signal = (
+        "bricolaje, decoraci" in text
+        and "leroy merlin" in text
+        and "mi carrito" in text
+        and "productos" in text
+    )
     if usable and has_product_signal and "please enable js" not in lowered:
         return False
-    markers = [
-        "captcha-delivery.com",
+    if usable and has_home_signal and "var dd=" not in lowered and "var dd =" not in lowered:
+        return False
+    if "captcha-delivery.com" in url.lower():
+        return True
+    visible_markers = [
         "please enable js",
-        "var dd=",
-        "var dd =",
         "access denied",
         "recaptcha",
         "g-recaptcha",
         "hcaptcha",
         "are you human",
+        "eres humano",
+        "verifica que eres",
         "unusual traffic",
         "blocked",
+        "bloqueado",
         "bot detection",
     ]
-    return any(marker in lowered for marker in markers)
+    structural_markers = ["var dd=", "var dd =", "g-recaptcha", "hcaptcha"]
+    return any(marker in text for marker in visible_markers) or any(marker in lowered for marker in structural_markers)
 
 
 def extract_availability(content: str) -> tuple[str, bool, str]:
@@ -1004,9 +1016,54 @@ class CarrefourChecker(LeroyChecker):
         self.block_assets = False
         self.minimal_data_mode = False
         self.data_settle_ms = max(self.data_settle_ms, 2500)
+        self.cdp_browsers = {}
+        self.cdp_processes = {}
 
     def profile_dir_for_worker(self, worker_id: int) -> Path:
         return FASE_DIR / f"browser_profile_carrefour_worker_{worker_id}"
+
+    def launch_worker_context(self, p, worker_id: int, PlaywrightTimeoutError):
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir_for_worker(worker_id)),
+            headless=False,
+            viewport={"width": 1365, "height": 900},
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+            args=["--disable-blink-features=AutomationControlled", "--disable-quic", "--start-minimized"],
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        minimize_chromium_window(context, page)
+        page.set_default_timeout(self.retry_timeout_ms)
+        warmup_error = ""
+        loaded = False
+        for attempt, timeout_ms in enumerate((self.nav_timeout_ms, self.retry_timeout_ms), start=1):
+            try:
+                page.goto(self.marketplace_config.home_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                loaded = True
+                break
+            except PlaywrightTimeoutError as exc:
+                warmup_error = f"timeout warm-up Carrefour intento {attempt}: {exc}"
+            except Exception as exc:
+                warmup_error = f"error warm-up Carrefour intento {attempt}: {exc}"
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                pass
+        if not loaded:
+            return context, page, False, warmup_error or "error warm-up Carrefour"
+
+        self.settle_and_stop(page)
+        try:
+            content = page.content()
+            title = page.title()
+            final_url = page.url
+        except Exception as exc:
+            return context, page, False, f"error warm-up Carrefour: {exc}"
+        if challenge_detected(content, title, final_url):
+            html_file = self.run_dir / f"worker_{worker_id:02d}_warmup_challenge.html"
+            html_file.write_text(content, encoding="utf-8")
+            return context, page, False, "challenge en warm-up Carrefour"
+        return context, page, True, warmup_error or "warm-up Carrefour correcto"
 
     def settle_and_stop(self, page) -> None:
         try:
@@ -1063,6 +1120,17 @@ class CarrefourChecker(LeroyChecker):
                 )
         return cards
 
+    def no_exact_match_for_ean(self, content_lower: str, text: str, ean: str) -> bool:
+        if not ean or ean not in text:
+            return False
+        if 'data-test="spellcheck-message"' not in content_lower and "no hemos encontrado coincidencias" not in text:
+            return False
+        patterns = (
+            rf"no hemos encontrado coincidencias para\s+{re.escape(ean)}\b",
+            rf"no se han encontrado coincidencias para\s+{re.escape(ean)}\b",
+        )
+        return any(re.search(pattern, text) for pattern in patterns)
+
     def classify_batch(
         self,
         batch: list[InputProduct],
@@ -1105,8 +1173,9 @@ class CarrefourChecker(LeroyChecker):
         cards_by_ean = {card.ean: card for card in cards if card.ean}
         rows: list[DashboardResult] = []
         for position, product in enumerate(batch):
+            no_exact_match = self.no_exact_match_for_ean(content_lower, text, product.ean)
             card = cards_by_ean.get(product.ean)
-            if not card and len(cards) == len(batch) and position < len(cards):
+            if not card and not no_exact_match and len(cards) == len(batch) and position < len(cards):
                 card = cards[position]
 
             if is_challenge:
@@ -1131,6 +1200,17 @@ class CarrefourChecker(LeroyChecker):
                 offer_available = False
                 buybox_ok = "unknown"
                 availability = "unknown"
+            elif no_exact_match:
+                light = "red"
+                status = "NO_VIVA"
+                reason = "Carrefour no encontro coincidencia exacta para el EAN"
+                seller_name = ""
+                marketplace_price = ""
+                result_url = final_url
+                product_title = title
+                offer_available = False
+                buybox_ok = "unknown"
+                availability = "no_exact_match"
             elif card:
                 seller_name = card.seller
                 marketplace_price = card.price
@@ -1276,7 +1356,55 @@ class CarrefourChecker(LeroyChecker):
         html_file = self.run_dir / f"carrefour_batch_{batch_index:04d}.html"
         html_file.write_text(content, encoding="utf-8")
         rows = self.classify_batch(batch, content, title, final_url, elapsed, str(html_file))
+        rows, page = self.retry_unmapped_batch_rows(context, page, rows, batch, batch_index, PlaywrightError)
         return rows, page
+
+    def retry_unmapped_batch_rows(
+        self,
+        context,
+        page,
+        rows: list[DashboardResult],
+        batch: list[InputProduct],
+        batch_index: int,
+        PlaywrightError,
+    ) -> tuple[list[DashboardResult], object]:
+        products_by_ean = {product.ean: product for product in batch}
+        updated_rows = list(rows)
+        retry_reason = "Carrefour devolvio resultados, pero no se pudo mapear tarjeta al EAN"
+        for position, row in enumerate(rows, start=1):
+            if row.status != "INCIERTA" or row.reason != retry_reason:
+                continue
+            product = products_by_ean.get(row.ean)
+            if not product or self.stop_requested:
+                continue
+            retry_started = time.monotonic()
+            url = build_marketplace_search_url(self.marketplace_key, [product.ean])
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=self.nav_timeout_ms)
+            except PlaywrightError:
+                try:
+                    page.close()
+                except PlaywrightError:
+                    pass
+                page = context.new_page()
+                minimize_chromium_window(context, page)
+                page.set_default_timeout(self.retry_timeout_ms)
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=self.retry_timeout_ms)
+                except PlaywrightError:
+                    continue
+
+            self.settle_and_stop(page)
+            content = page.content()
+            title = page.title()
+            final_url = page.url
+            elapsed = round(time.monotonic() - retry_started, 2)
+            html_file = self.run_dir / f"carrefour_batch_{batch_index:04d}_retry_{position:02d}_{product.ean}.html"
+            html_file.write_text(content, encoding="utf-8")
+            retry_rows = self.classify_batch([product], content, title, final_url, elapsed, str(html_file))
+            if retry_rows:
+                updated_rows[position - 1] = retry_rows[0]
+        return updated_rows, page
 
     def browser_worker(
         self,
@@ -1318,7 +1446,6 @@ class CarrefourChecker(LeroyChecker):
                     finally:
                         work_queue.task_done()
         except Exception as exc:
-            self.stop_requested = True
             events.put(("error", f"worker {worker_id}: {exc}"))
         finally:
             browser = self.cdp_browsers.pop(worker_id, None)

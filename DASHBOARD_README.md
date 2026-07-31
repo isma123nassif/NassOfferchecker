@@ -252,6 +252,8 @@ Los resultados rojos tienen subfiltros dentro de `Fuera`:
 
 Al reintentar un semaforo, la app conserva la tabla completa y solo pone como `Pendiente` los EAN del filtro reintentado. Los contadores se descuentan y recalculan solo para esas filas.
 
+La accion `Reintentar pendientes` relanza filas que quedaron en `Pendiente`. Si el worker termina sin devolver resultado para alguna fila en vuelo, la UI la marca como gris `INCIERTA` con motivo tecnico para que pueda volver a reintentarse desde `Tecnico`.
+
 Configuracion local opcional:
 
 ```json
@@ -279,11 +281,21 @@ https://www.carrefour.es/?query=8435544806788%208435544888012
 La clasificacion Carrefour se hace desde la propia busqueda:
 
 - verde: EAN encontrado, seller esperado coincide y hay boton de compra;
-- amarillo: seller distinto, seller no extraido o tarjeta sin boton de compra;
+- amarillo: EAN encontrado con seller distinto, seller no extraido o tarjeta sin boton de compra;
 - rojo: EAN no encontrado;
 - gris: challenge, timeout o HTML insuficiente.
 
 Para Carrefour se relaja la carga del navegador respecto a Leroy: no se aplican las rutas ligeras agresivas y se espera a carga/actividad de red antes de leer resultados.
+
+Carrefour tiene una excepcion importante: cuando la pagina muestra el banner `No hemos encontrado coincidencias para <EAN>` y debajo propone productos para otro EAN, esa tarjeta sugerida no se trata como perdida de buybox. El producto pedido se clasifica como rojo `NO_VIVA`. La perdida de buybox se reserva para casos donde la tarjeta corresponde al EAN exacto y el seller no es el esperado.
+
+Si una tanda batch trae resultados parciales y algun EAN queda sin tarjeta mapeable, Carrefour reintenta ese EAN individualmente antes de clasificarlo como gris tecnico.
+
+Simulador de diagnostico:
+
+```powershell
+python .\fase1\simulate_carrefour_worker.py --ean 8435544806788 --ean 8436616280192 --max-batches 1 --workers 1 --hold-seconds 5 --window-state minimized
+```
 
 ## CSV manual
 
@@ -332,3 +344,13 @@ fase1/dashboard_runs/<timestamp>/summary_live.csv
 ```
 
 Para ahorrar espacio, el HTML solo se guarda en casos no verdes.
+
+## Nota operativa Leroy
+
+Si Leroy muestra `challenge en warm-up`, el fallo ocurre antes de analizar EANs. Revisar el ultimo directorio:
+
+```text
+fase1/dashboard_runs/<timestamp>/worker_01_warmup_challenge.html
+```
+
+Puede ser challenge real o falso positivo por referencias tecnicas de DataDome en una home normal. Antes de cambiar extraccion de productos, comprobar `title`, URL final, longitud HTML y texto visible de ese archivo.

@@ -13,6 +13,25 @@ La decision comercial se basa en:
 - disponibilidad;
 - presencia/no presencia en el marketplace.
 
+## Regla permanente de aislamiento por marketplace
+
+Cuando el usuario pida un cambio para un marketplace concreto, ese cambio debe afectar solo a la gestion de ese marketplace.
+
+Ejemplos:
+
+- un ajuste de Leroy Merlin no debe cambiar Carrefour ni Worten;
+- un ajuste de Carrefour no debe tocar warm-up, cache, perfiles o extraccion de Leroy/Worten;
+- un ajuste de Worten debe quedarse dentro de la logica propia de Worten.
+
+Antes de editar hay que identificar el limite afectado:
+
+- config del marketplace en `marketplaces.py`;
+- clase/metodos del checker correspondiente en `dashboard_leroy.py`;
+- controles/estado de UI en `dashboard_leroy_modern.py`;
+- cache/feed/perfil bajo `fase1/`.
+
+Solo se debe tocar codigo compartido si el usuario pide un cambio global o si es imprescindible. En ese caso, documentar y verificar el impacto en todos los marketplaces.
+
 ## Como ejecutar
 
 Ruta del proyecto:
@@ -84,6 +103,7 @@ local_settings.example.json
   - `NO_VIVA` / fuera marketplace;
   - `SIN_STOCK_FEED` / sin stock en feed.
 - Reintentos por semaforo conservan la tabla y recalculan solo las filas seleccionadas, sin resetear todos los contadores.
+- Boton `Reintentar pendientes`; si un EAN relanzado no devuelve resultado al terminar la ejecucion, vuelve a gris `INCIERTA` con motivo tecnico en vez de quedar colgado como pendiente.
 - Boton y `Ctrl+C` para copiar EAN seleccionado.
 - Chromium minimizado.
 - Modo datos minimos para reducir carga de assets.
@@ -109,7 +129,8 @@ local_settings.example.json
   - navegador Carrefour con mas carga permitida que Leroy: sin rutas ligeras agresivas y con espera extra de carga;
   - extraccion desde busqueda de EAN, precio, seller, URL de ficha y boton de compra;
   - verde si seller esperado coincide y hay boton de compra;
-  - amarillo si seller no coincide, seller no se extrae o falta boton de compra.
+  - amarillo si seller no coincide, seller no se extrae o falta boton de compra;
+  - rojo `NO_VIVA` si Carrefour muestra banner de no coincidencia exacta para el EAN y sugiere otro producto.
 - Base Worten:
   - feed Shoppingfeed propio;
   - cache propia;
@@ -126,9 +147,66 @@ local_settings.example.json
 
 ## Ultimo avance
 
+El 2026-07-31 se corrigio Carrefour:
+
+- El banner `No hemos encontrado coincidencias para <EAN>` ya invalida las tarjetas sugeridas para otro EAN. Caso validado: `8435544806788` queda rojo `NO_VIVA`, no amarillo por perdida de buybox.
+- La perdida de buybox queda reservada para EAN exacto con seller distinto. Caso validado: `8436616280192` queda amarillo `BUYBOX_PERDIDA` con seller `ElectroMGD`.
+- Si una busqueda batch devuelve HTML con resultados pero no permite mapear una tarjeta al EAN, Carrefour reintenta esos EANs individualmente antes de devolver gris tecnico.
+- El warm-up Carrefour usa Chromium persistente por worker con `--disable-quic`, reintento ante errores de navegacion y cierre aislado del worker que falle, sin parar automaticamente el resto.
+- Se anadio `fase1/simulate_carrefour_worker.py` para reproducir ejecuciones visibles, maximizadas o minimizadas, con uno o dos workers y EANs concretos.
+
 Se archivo la logica compleja de Worten en `archive/dashboard_leroy_worten_legacy_20260730.py` y se reactivo Worten con el flujo simple validado: seller page solo como warm-up/recuperacion, busquedas encadenadas por input en tandas de 10 EAN y extraccion desde tarjetas visibles. La UI ahora separa rojos por `NO_VIVA` y `SIN_STOCK_FEED`, muestra columna `Producto` y mantiene contadores al reintentar filtros.
 
 Anteriormente se corrigio la confusion visual del texto `Worker 1 activo`, se anadio warm-up por worker y se sento la base Carrefour.
+
+## Handoff 2026-07-30 - Leroy roto en warm-up
+
+Estado actual reportado por el usuario:
+
+- Al lanzar Leroy aparece `challenge en warm-up`.
+- No llega a arrancar el worker ni a consumir productos.
+- El problema esta antes del checkeo de EANs: en `LeroyChecker.launch_worker_context()` tras abrir `https://www.leroymerlin.es/`.
+
+Diagnostico hecho:
+
+- Las ultimas ejecuciones revisadas (`fase1/dashboard_runs/20260730_160322` y `20260730_160311`) solo contenian `worker_01_warmup_challenge.html`, sin `summary_live.csv`.
+- El HTML `fase1/dashboard_runs/20260730_160322/worker_01_warmup_challenge.html` tenia titulo normal de home:
+
+```text
+Bricolaje, Decoracion, Jardin y Construccion - Leroy Merlin
+```
+
+- Ese HTML parecia home usable, no challenge real. Contenia referencias tecnicas a DataDome/captcha en scripts/CSP, por ejemplo `captcha-delivery.com`, y eso provocaba falso positivo en `challenge_detected()`.
+- Se aplico un ajuste local en `dashboard_leroy.py` para que `challenge_detected()`:
+  - extraiga texto visible;
+  - reconozca senales de home normal de Leroy;
+  - no marque challenge solo por referencias tecnicas a `captcha-delivery.com`;
+  - siga marcando challenge si la URL es de captcha o hay textos/estructuras visibles de bloqueo.
+- Verificacion local sobre el HTML guardado:
+
+```text
+challenge_detected= False
+```
+
+Pero despues del ajuste el usuario sigue viendo `challenge en warm-up`, por lo que manana hay que confirmar si:
+
+- se esta generando un HTML nuevo distinto al revisado;
+- el contenido live contiene `var dd=` real de DataDome y no solo CSP;
+- el worker esta usando un perfil/cookie de Leroy bloqueado;
+- el modo `minimal_data_mode` esta bloqueando algun recurso necesario para que Leroy complete la validacion.
+
+Siguiente paso recomendado:
+
+1. Lanzar una prueba Leroy con 1 worker y revisar el nuevo directorio `fase1/dashboard_runs/<timestamp>`.
+2. Si aparece `worker_01_warmup_challenge.html`, extraer solo:
+   - `title`;
+   - `page.url`;
+   - longitud HTML;
+   - conteo de marcadores `datadome`, `captcha`, `var dd=`, `access denied`, `blocked`, `leroy merlin`;
+   - primeras lineas de texto visible sin scripts.
+3. No tocar Carrefour/Worten.
+4. Si vuelve a ser falso positivo, endurecer `challenge_detected()` solo para Leroy.
+5. Si es challenge real, revisar perfil `fase1/browser_profile_leroy` y recursos permitidos en `install_lightweight_routes()`.
 
 Ahora la UI mantiene el subtitulo superior para salida/catalogo y muestra un resumen agregado de workers junto a los chips:
 

@@ -255,7 +255,20 @@ En esta base inicial:
 - Carrefour no usa el modo minimo agresivo de Leroy: deja cargar JS/XHR/CSS/recursos necesarios y espera mas antes de leer el HTML;
 - desde la busqueda Carrefour se extraen EAN, precio, seller, URL de ficha y boton de compra;
 - si seller esperado coincide y hay boton de compra, se marca verde `Correcto`;
-- si seller no coincide o falta boton de compra, se marca amarillo.
+- si seller no coincide o falta boton de compra, se marca amarillo;
+- si Carrefour muestra el banner `No hemos encontrado coincidencias para <EAN>` y propone productos para otro EAN, se marca rojo `NO_VIVA` aunque haya una tarjeta visible;
+- si una busqueda batch devuelve resultados pero no se puede mapear una tarjeta al EAN pedido, Carrefour reintenta ese EAN de forma individual antes de dejarlo como tecnico.
+
+Ejemplos validados:
+
+- `8435544806788`: Carrefour muestra una sugerencia para otro EAN, por tanto queda rojo `NO_VIVA`.
+- `8436616280192`: Carrefour encuentra el EAN exacto con seller `ElectroMGD`, por tanto queda amarillo `BUYBOX_PERDIDA` si el seller esperado es `NEWLUX GROUP`.
+
+Diagnostico local:
+
+```powershell
+python .\fase1\simulate_carrefour_worker.py --ean 8435544806788 --ean 8436616280192 --max-batches 1 --workers 1 --hold-seconds 5 --window-state minimized
+```
 
 ## Worten
 
@@ -277,6 +290,8 @@ El semaforo rojo se mantiene como categoria comercial `Fuera`, pero al filtrar r
 - `Sin stock feed`: productos saltados porque el feed indica stock `<= 0`.
 
 Al usar `Reintentar` desde un semaforo, la UI conserva el resto de resultados y solo recalcula los EAN del filtro seleccionado, evitando resetear todos los contadores.
+
+La barra de resultados incluye `Reintentar pendientes`. Si una ejecucion o reintento termina sin devolver resultado para algun EAN, la app lo devuelve automaticamente a gris `INCIERTA` con motivo tecnico, en vez de dejarlo colgado como pendiente sin estado.
 
 ## Alertas Slack
 

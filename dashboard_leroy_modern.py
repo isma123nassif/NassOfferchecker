@@ -159,6 +159,8 @@ class ModernDashboard(ctk.CTk):
         self.cached_count = 0
         self.direct_count = 0
         self.live_total = 0
+        self.live_pending_products: dict[str, InputProduct] = {}
+        self.user_stop_requested = False
         dialog = MarketplaceDialog(self)
         self.wait_window(dialog)
         self.marketplace = dialog.result
@@ -426,6 +428,18 @@ class ModernDashboard(ctk.CTk):
         self.subfilter_buttons["SIN_STOCK_FEED"].pack_forget()
         ctk.CTkButton(
             table_toolbar,
+            text="Reintentar pendientes",
+            width=144,
+            height=30,
+            fg_color="#FFFFFF",
+            text_color=TEXT,
+            hover_color="#F3F4F6",
+            border_width=1,
+            border_color=BORDER,
+            command=self.retry_pending,
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8))
+        ctk.CTkButton(
+            table_toolbar,
             text="Todos",
             width=78,
             height=30,
@@ -435,7 +449,7 @@ class ModernDashboard(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             command=self.clear_filters,
-        ).grid(row=0, column=2, sticky="e", padx=(0, 8))
+        ).grid(row=0, column=3, sticky="e", padx=(0, 8))
         ctk.CTkButton(
             table_toolbar,
             text="Copiar EAN",
@@ -447,7 +461,7 @@ class ModernDashboard(ctk.CTk):
             border_width=1,
             border_color=BORDER,
             command=self.copy_selected_ean,
-        ).grid(row=0, column=3, sticky="e")
+        ).grid(row=0, column=4, sticky="e")
 
         self.setup_tree_style()
         columns = ("light", "ean", "reference", "product", "stock", "feed_price", "status", "seller", "market_price", "reason")
@@ -581,6 +595,9 @@ class ModernDashboard(ctk.CTk):
             self.events.put(("catalog_error", str(exc)))
 
     def add_pending_row(self, product: InputProduct):
+        existing = self.row_items.get(product.ean)
+        if existing:
+            return existing
         item = self.tree.insert(
             "",
             "end",
@@ -615,6 +632,35 @@ class ModernDashboard(ctk.CTk):
             elapsed_seconds=0.0,
             html_path="",
         )
+
+    def build_unresolved_result(self, product: InputProduct, reason: str) -> DashboardResult:
+        return DashboardResult(
+            ean=product.ean,
+            reference=product.reference,
+            feed_quantity=product.quantity,
+            feed_price=product.price,
+            light="gray",
+            status="INCIERTA",
+            final_url=build_marketplace_search_url(self.marketplace_key, [product.ean]),
+            title="",
+            sku="",
+            seller_name="",
+            marketplace_price="",
+            product_availability="unknown",
+            offer_available=False,
+            buybox_ok="unknown",
+            challenge_detected=False,
+            reason=reason,
+            elapsed_seconds=0.0,
+            html_path="",
+        )
+
+    def mark_unresolved_live_products(self, reason: str) -> int:
+        pending = list(self.live_pending_products.values())
+        self.live_pending_products.clear()
+        for product in pending:
+            self.render_result_row(self.build_unresolved_result(product, reason))
+        return len(pending)
 
     def render_result_row(self, row: DashboardResult):
         item = self.row_items.get(row.ean)
@@ -707,7 +753,7 @@ class ModernDashboard(ctk.CTk):
 
     def product_from_item(self, item: str) -> InputProduct | None:
         values = self.tree.item(item, "values")
-        if len(values) < 5:
+        if len(values) < 6:
             return None
         ean = str(values[1]).strip()
         if not ean:
@@ -743,6 +789,28 @@ class ModernDashboard(ctk.CTk):
         self.progress_text.set(f"Reintentando {len(products)} EAN de {label}")
         self.start_analysis()
 
+    def retry_pending(self):
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning("En ejecucion", "Para el analisis antes de reintentar.")
+            return
+        products: list[InputProduct] = []
+        seen: set[str] = set()
+        for item in self.row_order:
+            if self.row_lights.get(item) != "pending" and self.row_statuses.get(item) != "PENDIENTE":
+                continue
+            product = self.product_from_item(item)
+            if product and product.ean not in seen:
+                products.append(product)
+                seen.add(product.ean)
+        if not products:
+            self.progress_text.set("No hay EAN pendientes para reintentar")
+            return
+        self.products = products
+        self.force_live_once = True
+        self.retrying_light = "pending"
+        self.progress_text.set(f"Reintentando {len(products)} EAN pendientes")
+        self.start_analysis()
+
     def start_analysis(self):
         if not self.products:
             self.add_single_ean()
@@ -752,6 +820,7 @@ class ModernDashboard(ctk.CTk):
         if self.worker and self.worker.is_alive():
             self.progress_text.set("Ya hay un analisis activo; pulsa Parar antes de lanzar otro.")
             return
+        self.user_stop_requested = False
         self.events = queue.Queue()
         try:
             delay = float(self.delay_var.get().replace(",", "."))
@@ -802,8 +871,10 @@ class ModernDashboard(ctk.CTk):
                 self.row_lights[item] = "pending"
                 self.row_statuses[item] = "PENDIENTE"
                 self.row_urls[item] = ""
-                if self.active_filter is not None:
+                if self.active_filter is not None and self.active_filter != retrying_light:
                     self.tree.detach(item)
+                elif self.active_filter is not None:
+                    self.tree.reattach(item, "", "end")
             self.update_cards()
         else:
             self.counts = {"green": 0, "yellow": 0, "red": 0, "gray": 0}
@@ -840,7 +911,9 @@ class ModernDashboard(ctk.CTk):
                 self.add_pending_row(product)
         self.progress.set(0)
         self.live_total = len(products_to_check)
+        self.live_pending_products = {product.ean: product for product in products_to_check}
         if not products_to_check:
+            self.live_pending_products.clear()
             resolved = self.cached_count + self.direct_count
             self.progress.set(1)
             self.progress_text.set(f"Terminado sin navegador: {resolved} resueltos por cache/feed")
@@ -866,6 +939,7 @@ class ModernDashboard(ctk.CTk):
 
     def stop_analysis(self):
         if self.checker:
+            self.user_stop_requested = True
             self.checker.stop()
             self.progress_text.set("Parando al finalizar el producto actual...")
 
@@ -1063,6 +1137,7 @@ class ModernDashboard(ctk.CTk):
                 kind = event[0]
                 if kind == "result":
                     _, index, total, row = event
+                    self.live_pending_products.pop(row.ean, None)
                     self.render_result_row(row)
                     resolved = self.cached_count + self.direct_count + index
                     full_total = self.cached_count + self.direct_count + total
@@ -1070,8 +1145,12 @@ class ModernDashboard(ctk.CTk):
                     self.progress_text.set(f"{resolved}/{full_total} resueltos ({index}/{total} navegador)")
                 elif kind == "done":
                     _, elapsed, summary = event
+                    unresolved = 0
+                    if not self.user_stop_requested:
+                        unresolved = self.mark_unresolved_live_products("sin resultado tras relanzar; queda como tecnico")
                     skipped = self.cached_count + self.direct_count
-                    self.progress_text.set(f"Terminado en {elapsed}s - {summary} - saltados {skipped}")
+                    suffix = f" - {unresolved} pendientes marcados tecnico" if unresolved else ""
+                    self.progress_text.set(f"Terminado en {elapsed}s - {summary} - saltados {skipped}{suffix}")
                 elif kind == "run_dir":
                     self.subtitle_var.set(f"Salida: {event[1]}")
                 elif kind == "phase3":
@@ -1103,6 +1182,9 @@ class ModernDashboard(ctk.CTk):
                     self.update_worker_chip(event[1], status="bloqueado")
                     self.progress_text.set(f"No se resolvio el challenge en Worker {event[1]}")
                 elif kind == "error":
+                    unresolved = self.mark_unresolved_live_products(f"error tecnico: {event[1]}")
+                    if unresolved:
+                        self.progress_text.set(f"{unresolved} pendientes marcados tecnico por error")
                     messagebox.showerror("Error", event[1])
                 elif kind == "alert_sent":
                     self.progress_text.set(f"Alerta enviada a Slack: EAN {event[1]} ({event[2]})")
